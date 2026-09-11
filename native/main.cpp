@@ -32,11 +32,12 @@
 
 namespace {
 constexpr UINT tray_message = WM_APP + 1;
-constexpr int search_id = 101, options_id = 102, pause_id = 103, exit_id = 104, about_id = 105;
+constexpr int search_id = 101, options_id = 102, pause_id = 103, exit_id = 104, about_id = 105, setup_id = 106;
 constexpr wchar_t developer_site[] = L"https://www.hypedriven.com";
 // Public repository link for the About window; empty until the project has a known public page.
 constexpr wchar_t project_site[] = L"https://github.com/HypeDriven/hypetabs";
 HWND about_window{};
+HWND setup_window{};
 HWND main_window{}, query_box{}, results_box{}, status_label{}, options_window{}, shortcut_box{};
 HFONT ui_font{};
 HFONT search_font{};
@@ -476,6 +477,7 @@ void update_icons(bool force = false) {
     if (main_window) { SendMessageW(main_window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon_small)); SendMessageW(main_window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon_large)); }
     if (options_window) { SendMessageW(options_window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon_small)); SendMessageW(options_window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon_large)); }
     if (about_window) { SendMessageW(about_window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon_small)); SendMessageW(about_window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon_large)); }
+    if (setup_window) { SendMessageW(setup_window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon_small)); SendMessageW(setup_window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon_large)); }
     tray.hIcon = icon_small;
     if (tray.cbSize) { tray.uFlags = NIF_ICON | NIF_TIP; Shell_NotifyIconW(NIM_MODIFY, &tray); }
     if (tray_icon) DestroyIcon(tray_icon); if (window_icon) DestroyIcon(window_icon);
@@ -723,33 +725,104 @@ void show_about() {
     update_icons(true);
     ShowWindow(about_window, SW_SHOW); SetForegroundWindow(about_window);
 }
-// Startup check: list Chrome profiles whose extension records lack HypeTabs and offer to open
-// chrome://extensions in each so the user can load the installed extension folder there.
-void prompt_missing_profiles() {
-    if (deployed.extension.empty()) return; // nothing unpacked, so nothing can be loaded into Chrome
-    const auto& folder = deployed.extension;
-    auto profiles = hype::profiles::scan(hype::profiles::default_user_data(), folder, deployed.extension_id);
-    std::erase_if(profiles, [](const auto& profile) { return profile.integrated; });
-    if (profiles.empty()) return;
-    auto chrome = hype::profiles::chrome_executable();
-    std::wstring message = profiles.size() == 1 ? L"This Chrome profile does not have the HypeTabs extension yet:\n" : L"These Chrome profiles do not have the HypeTabs extension yet:\n";
-    size_t listed = 0;
-    for (const auto& profile : profiles) { if (listed++ == 8) { message += L"    …\n"; break; } message += L"    " + profile.name + L"\n"; }
-    message += L"\nHypeTabs can only find tabs in profiles where the extension is loaded.\n\nIn each profile, type chrome://extensions in the address bar, turn on Developer mode, choose Load unpacked, and paste this folder (copied to the clipboard when you choose Yes):\n" + folder +
-        (chrome.empty() ? L"\n\nChrome could not be located, so open those profiles yourself." : L"\n\nOpen a window for each of these profiles now?") + L"\n\nYou can turn this check off in Options.";
-    if (MessageBoxW(nullptr, message.c_str(), L"HypeTabs — Chrome profiles", (chrome.empty() ? MB_OK : MB_YESNO) | MB_ICONINFORMATION | MB_SETFOREGROUND) != IDYES) return;
-    if (OpenClipboard(nullptr)) {
-        EmptyClipboard();
-        if (HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (folder.size() + 1) * sizeof(wchar_t))) {
-            if (auto target = static_cast<wchar_t*>(GlobalLock(memory))) { std::copy(folder.begin(), folder.end(), target); target[folder.size()] = L'\0'; GlobalUnlock(memory); }
-            if (!SetClipboardData(CF_UNICODETEXT, memory)) GlobalFree(memory);
-        }
-        CloseClipboard();
+// Setup window: an always-on-top checklist that stays open while the user loads the extension in
+// each Chrome profile. It lists the profiles still lacking the extension, opens a window for the
+// selected one, keeps the unpacked folder path one click from the clipboard, and rescans Chrome's
+// extension records every few seconds so finished profiles drop off the list.
+std::vector<hype::profiles::ChromeProfile> setup_profiles;
+constexpr int setup_list_id = 241, setup_open_id = 242, setup_copy_id = 243, setup_path_id = 244, setup_status_id = 245, setup_close_id = 246, setup_steps_id = 247;
+constexpr UINT setup_timer = 7;
+bool copy_to_clipboard(const std::wstring& text) {
+    if (!OpenClipboard(nullptr)) return false;
+    bool ok = false; EmptyClipboard();
+    if (HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t))) {
+        if (auto target = static_cast<wchar_t*>(GlobalLock(memory))) { std::copy(text.begin(), text.end(), target); target[text.size()] = L'\0'; GlobalUnlock(memory); }
+        ok = SetClipboardData(CF_UNICODETEXT, memory) != nullptr; if (!ok) GlobalFree(memory);
     }
-    bool failed = false;
-    for (const auto& profile : profiles) failed |= !hype::profiles::open_profile(chrome, profile.directory);
-    if (failed) MessageBoxW(nullptr, L"Some Chrome profiles could not be opened. Open them yourself, go to chrome://extensions, and load the extension folder.", L"HypeTabs", MB_OK | MB_ICONINFORMATION);
+    CloseClipboard(); return ok;
 }
+std::vector<hype::profiles::ChromeProfile> missing_profiles() {
+    if (deployed.extension.empty()) return {}; // nothing unpacked, so nothing can be loaded into Chrome
+    auto profiles = hype::profiles::scan(hype::profiles::default_user_data(), deployed.extension, deployed.extension_id);
+    std::erase_if(profiles, [](const auto& profile) { return profile.integrated; });
+    return profiles;
+}
+// Refreshes the list; returns true when every profile now has the extension.
+bool refresh_setup(HWND window) {
+    auto list = GetDlgItem(window, setup_list_id);
+    auto previous = SendMessageW(list, LB_GETCURSEL, 0, 0);
+    setup_profiles = missing_profiles();
+    SendMessageW(list, LB_RESETCONTENT, 0, 0);
+    for (const auto& profile : setup_profiles) SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(profile.name.c_str()));
+    if (!setup_profiles.empty()) SendMessageW(list, LB_SETCURSEL, std::clamp<LRESULT>(previous, 0, static_cast<LRESULT>(setup_profiles.size()) - 1), 0);
+    bool done = setup_profiles.empty();
+    EnableWindow(GetDlgItem(window, setup_open_id), !done && !hype::profiles::chrome_executable().empty());
+    SetWindowTextW(GetDlgItem(window, setup_status_id), done ? L"Every Chrome profile has the HypeTabs extension. You can close this window."
+        : (std::to_wstring(setup_profiles.size()) + (setup_profiles.size() == 1 ? L" profile still needs the extension. This list updates by itself as you finish each one." : L" profiles still need the extension. This list updates by itself as you finish each one.")).c_str());
+    return done;
+}
+LRESULT CALLBACK setup_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
+    switch (message) {
+    case WM_CREATE: {
+        int dpi = static_cast<int>(GetDpiForWindow(window)); auto px = [&](int v) { return MulDiv(v, dpi, 96); };
+        auto intro = control(window, L"STATIC", L"HypeTabs can only find tabs in Chrome profiles where its extension is loaded. These profiles still need it:", 0, 0);
+        MoveWindow(intro, px(20), px(16), px(440), px(40), TRUE);
+        auto list = control(window, L"LISTBOX", L"Chrome profiles", WS_TABSTOP | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, setup_list_id);
+        MoveWindow(list, px(20), px(60), px(300), px(96), TRUE);
+        auto open = control(window, L"BUTTON", L"Open profile window", WS_TABSTOP | BS_DEFPUSHBUTTON, setup_open_id);
+        MoveWindow(open, px(330), px(60), px(130), px(30), TRUE);
+        auto steps = control(window, L"STATIC",
+            L"In that window:\r\n1.  Type  chrome://extensions  in the address bar and press Enter.\r\n2.  Turn on Developer mode (top right).\r\n3.  Click Load unpacked and paste the folder below into the file name box.\r\n4.  Click the new HypeTabs toolbar icon once to connect.", 0, setup_steps_id);
+        MoveWindow(steps, px(20), px(166), px(440), px(96), TRUE);
+        auto path = control(window, L"EDIT", deployed.extension.c_str(), WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY, setup_path_id);
+        MoveWindow(path, px(20), px(268), px(300), px(26), TRUE);
+        auto copy = control(window, L"BUTTON", L"Copy folder path", WS_TABSTOP, setup_copy_id);
+        MoveWindow(copy, px(330), px(266), px(130), px(30), TRUE);
+        auto status = control(window, L"STATIC", L"", 0, setup_status_id); MoveWindow(status, px(20), px(306), px(440), px(40), TRUE);
+        auto close = control(window, L"BUTTON", L"Close", WS_TABSTOP, setup_close_id); MoveWindow(close, px(330), px(350), px(130), px(30), TRUE);
+        auto note = control(window, L"STATIC", L"This window stays on top. Turn the startup check off in Options if you do not want it.", 0, 0);
+        MoveWindow(note, px(20), px(354), px(300), px(40), TRUE);
+        if (theme) theme->apply(window);
+        refresh_setup(window); SetTimer(window, setup_timer, 5000, nullptr);
+        return 0;
+    }
+    case WM_TIMER: if (w == setup_timer) refresh_setup(window); return 0;
+    case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX: case WM_CTLCOLORBTN:
+        if (theme) if (auto brush = theme->color(message, reinterpret_cast<HDC>(w), false)) return reinterpret_cast<LRESULT>(brush);
+        break;
+    case WM_COMMAND:
+        switch (LOWORD(w)) {
+        case setup_open_id: {
+            auto selected = SendMessageW(GetDlgItem(window, setup_list_id), LB_GETCURSEL, 0, 0);
+            if (selected < 0 || static_cast<size_t>(selected) >= setup_profiles.size()) break;
+            copy_to_clipboard(deployed.extension);
+            if (!hype::profiles::open_profile(hype::profiles::chrome_executable(), setup_profiles[static_cast<size_t>(selected)].directory))
+                SetWindowTextW(GetDlgItem(window, setup_status_id), L"Chrome could not be started for that profile. Open it yourself and follow the steps above.");
+            else SetWindowTextW(GetDlgItem(window, setup_status_id), (L"Opening " + setup_profiles[static_cast<size_t>(selected)].name + L". The folder path is on your clipboard.").c_str());
+            break;
+        }
+        case setup_list_id: if (HIWORD(w) == LBN_DBLCLK) SendMessageW(window, WM_COMMAND, setup_open_id, 0); break;
+        case setup_copy_id:
+            SetWindowTextW(GetDlgItem(window, setup_status_id), copy_to_clipboard(deployed.extension) ? L"Folder path copied. Paste it into Chrome's Load unpacked dialog." : L"The clipboard is busy; select the path above and copy it instead.");
+            break;
+        case setup_close_id: DestroyWindow(window); break;
+        }
+        return 0;
+    case WM_CLOSE: DestroyWindow(window); return 0;
+    case WM_DESTROY: KillTimer(window, setup_timer); setup_window = nullptr; setup_profiles.clear(); return 0;
+    }
+    return DefWindowProcW(window, message, w, l);
+}
+void show_setup() {
+    if (cue) cue->hide();
+    int dpi = static_cast<int>(GetDpiForWindow(main_window));
+    if (!setup_window) setup_window = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_TOPMOST, L"HypeTabsSetup", L"Set up HypeTabs in Chrome", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, MulDiv(495, dpi, 96), MulDiv(440, dpi, 96), nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    update_icons(true);
+    ShowWindow(setup_window, SW_SHOW); SetForegroundWindow(setup_window);
+}
+// Startup check: open the setup window when any Chrome profile still lacks the extension.
+void prompt_missing_profiles() { if (!missing_profiles().empty()) show_setup(); }
 void show_options() {
     if (cue) cue->hide();
     if (!options_window) options_window = CreateWindowExW(WS_EX_APPWINDOW, L"HypeTabsOptions", L"HypeTabs options",
@@ -878,6 +951,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case WM_COMMAND:
         switch (LOWORD(w)) {
         case about_id: show_about(); break;
+        case setup_id: show_setup(); break;
         case search_id: toggle_search(); break;
         case options_id: show_options(); break;
         case pause_id:
@@ -903,6 +977,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             HMENU menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING, search_id, L"Search");
             AppendMenuW(menu, MF_STRING, options_id, L"Options");
+            if (!deployed.extension.empty()) AppendMenuW(menu, MF_STRING, setup_id, L"Set up Chrome profiles");
             AppendMenuW(menu, MF_STRING | (paused ? MF_CHECKED : 0), pause_id, L"Pause collection");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(menu, MF_STRING, about_id, L"About HypeTabs");
@@ -987,6 +1062,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     RegisterClassW(&cls);
     cls.lpfnWndProc = options_proc; cls.lpszClassName = L"HypeTabsOptions"; RegisterClassW(&cls);
     cls.lpfnWndProc = about_proc; cls.lpszClassName = L"HypeTabsAbout"; RegisterClassW(&cls);
+    cls.lpfnWndProc = setup_proc; cls.lpszClassName = L"HypeTabsSetup"; RegisterClassW(&cls);
     main_window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"HypeTabsSearch", L"HypeTabs — Find a tab",
         WS_POPUP, 0, 0, widget_default_width, 410, nullptr, nullptr, instance, nullptr);
     if (!main_window) { DeleteObject(ui_font); CloseHandle(singleton); return 1; }
@@ -1028,6 +1104,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             if (options_layout) options_layout->reveal(GetFocus());
             continue;
         }
+        if (setup_window && IsDialogMessageW(setup_window, &message)) continue;
         if (IsWindowVisible(main_window) && (message.hwnd == query_box || message.hwnd == results_box) && message.message == WM_KEYDOWN) {
             if (message.wParam == VK_RETURN) { activate_selection(); continue; }
             if (message.wParam == VK_ESCAPE) { dismiss(true); continue; }
