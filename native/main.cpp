@@ -25,6 +25,7 @@
 #include "theme.hpp"
 #include "app_icon.hpp"
 #include "shortcut_hook.hpp"
+#include "profile_setup.hpp"
 #include <memory>
 
 namespace {
@@ -66,7 +67,7 @@ std::unique_ptr<hype::HistoryStore> history_store;
 bool history_save_armed = false;
 // Version 5 appends the cue color (COLORREF; CLR_INVALID = system highlight) to the 24-byte version 4 record.
 // Version 6 appends the search widget's last size in 96-DPI units (0 = default) to the 32-byte version 5 record.
-struct SavedSettings { uint32_t magic = 0x48545032; uint16_t shortcut{}; uint8_t days = 7; uint8_t version = 6; int64_t history_floor = 0; uint32_t cue_seconds = 5; uint8_t guided = 1; uint8_t reduced_motion = 0; uint8_t reserved[2]{}; uint32_t cue_color = CLR_INVALID; uint32_t widget_width = 0; uint32_t widget_height = 0; };
+struct SavedSettings { uint32_t magic = 0x48545032; uint16_t shortcut{}; uint8_t days = 7; uint8_t version = 7; int64_t history_floor = 0; uint32_t cue_seconds = 5; uint8_t guided = 1; uint8_t reduced_motion = 0; uint8_t skip_profile_check = 0; uint8_t reserved = 0; uint32_t cue_color = CLR_INVALID; uint32_t widget_width = 0; uint32_t widget_height = 0; };
 COLORREF cue_color = CLR_INVALID, pending_cue_color = CLR_INVALID;
 COLORREF custom_colors[16]{};
 static_assert(sizeof(SavedSettings) == 40); // 32-byte version 5 record: size fills its padding and adds 8 bytes
@@ -99,6 +100,7 @@ hype::StartupRegistration startup;
 bool isolated_data = false;
 bool startup_was_enabled = false;
 bool first_run = false;
+bool profile_check = true; // startup prompt for Chrome profiles that lack the extension
 struct ProfileChoice { std::wstring id, label; uint64_t connection{}; };
 std::vector<ProfileChoice> profile_choices;
 void refresh_profiles(HWND window);
@@ -138,7 +140,7 @@ bool save_settings() {
     HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;
-    SavedSettings settings; settings.shortcut = shortcut; settings.days = static_cast<uint8_t>(browser.retention_days); settings.history_floor = browser.history_floor; settings.cue_seconds = cue_seconds; settings.guided = guided ? 1 : 0; settings.reduced_motion = reduced_motion ? 1 : 0; settings.cue_color = cue_color; settings.widget_width = widget_width; settings.widget_height = widget_height;
+    SavedSettings settings; settings.shortcut = shortcut; settings.days = static_cast<uint8_t>(browser.retention_days); settings.history_floor = browser.history_floor; settings.cue_seconds = cue_seconds; settings.guided = guided ? 1 : 0; settings.reduced_motion = reduced_motion ? 1 : 0; settings.skip_profile_check = profile_check ? 0 : 1; settings.cue_color = cue_color; settings.widget_width = widget_width; settings.widget_height = widget_height;
     bool ok = WriteFile(file, &settings, sizeof(settings), &written, nullptr) && written == sizeof(settings);
     if (ok) ok = FlushFileBuffers(file) != FALSE;
     CloseHandle(file);
@@ -558,26 +560,28 @@ LRESULT CALLBACK options_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         options_layout->place(status, 20, 410, 405, 36);
         auto info = control(window, L"STATIC", L"To connect another profile: open chrome://extensions in that profile, load the installed HypeTabs extension folder, then click its toolbar icon to reconnect.", 0, 0);
         options_layout->place(info, 20, 453, 405, 72);
+        auto check = control(window, L"BUTTON", L"Check Chrome profiles for the extension at startup", WS_TABSTOP | BS_AUTOCHECKBOX, 225);
+        options_layout->place(check, 20, 527, 405, 26); SendMessageW(check, BM_SETCHECK, profile_check ? BST_CHECKED : BST_UNCHECKED, 0);
         auto guide = control(window, L"BUTTON", L"Show location cues", WS_TABSTOP | BS_AUTOCHECKBOX, 217);
-        options_layout->place(guide, 20, 535, 250, 26); SendMessageW(guide, BM_SETCHECK, guided ? BST_CHECKED : BST_UNCHECKED, 0);
-        auto duration_label = control(window, L"STATIC", L"Cue duration", 0, 219); options_layout->place(duration_label, 20, 577, 130, 24);
+        options_layout->place(guide, 20, 567, 250, 26); SendMessageW(guide, BM_SETCHECK, guided ? BST_CHECKED : BST_UNCHECKED, 0);
+        auto duration_label = control(window, L"STATIC", L"Cue duration", 0, 219); options_layout->place(duration_label, 20, 609, 130, 24);
         auto duration = control(window, L"COMBOBOX", L"Cue duration", WS_TABSTOP | CBS_DROPDOWNLIST, 218);
-        options_layout->place(duration, 160, 573, 170, 200);
+        options_layout->place(duration, 160, 605, 170, 200);
         for (int seconds = 1; seconds <= 30; ++seconds) {
             auto duration_caption = std::to_wstring(seconds) + (seconds == 1 ? L" second" : L" seconds");
             SendMessageW(duration, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(duration_caption.c_str()));
         }
         SendMessageW(duration, CB_SETCURSEL, cue_seconds - 1, 0);
         auto motion = control(window, L"BUTTON", L"Use outline cues (reduced motion)", WS_TABSTOP | BS_AUTOCHECKBOX, 220);
-        options_layout->place(motion, 20, 613, 405, 26);
+        options_layout->place(motion, 20, 645, 405, 26);
         SendMessageW(motion, BM_SETCHECK, reduced_motion ? BST_CHECKED : BST_UNCHECKED, 0);
-        auto color_label = control(window, L"STATIC", L"Cue colour", 0, 0); options_layout->place(color_label, 20, 651, 130, 24);
-        auto swatch = control(window, L"STATIC", L"", SS_OWNERDRAW, 223); options_layout->place(swatch, 160, 649, 40, 26);
-        auto pick = control(window, L"BUTTON", L"Choose…", WS_TABSTOP, 222); options_layout->place(pick, 210, 647, 100, 30);
-        auto system_color = control(window, L"BUTTON", L"System", WS_TABSTOP, 224); options_layout->place(system_color, 320, 647, 105, 30);
+        auto color_label = control(window, L"STATIC", L"Cue colour", 0, 0); options_layout->place(color_label, 20, 683, 130, 24);
+        auto swatch = control(window, L"STATIC", L"", SS_OWNERDRAW, 223); options_layout->place(swatch, 160, 681, 40, 26);
+        auto pick = control(window, L"BUTTON", L"Choose…", WS_TABSTOP, 222); options_layout->place(pick, 210, 679, 100, 30);
+        auto system_color = control(window, L"BUTTON", L"System", WS_TABSTOP, 224); options_layout->place(system_color, 320, 679, 105, 30);
         pending_cue_color = cue_color;
         auto about = control(window, L"STATIC", L"Developed by hypedriven.com", SS_NOTIFY | SS_RIGHT, 221);
-        options_layout->place(about, 20, 691, 405, 20);
+        options_layout->place(about, 20, 723, 405, 20);
         if (theme) theme->apply(window);
         options_layout->set_dpi(GetDpiForWindow(window));
         refresh_profiles(window); return 0;
@@ -664,6 +668,7 @@ LRESULT CALLBACK options_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
                 reduced_motion = SendMessageW(GetDlgItem(window, 220), BM_GETCHECK, 0, 0) == BST_CHECKED;
                 cue_color = pending_cue_color; if (cue) cue->set_color(cue_color);
                 guided = SendMessageW(GetDlgItem(window, 217), BM_GETCHECK, 0, 0) == BST_CHECKED;
+                profile_check = SendMessageW(GetDlgItem(window, 225), BM_GETCHECK, 0, 0) == BST_CHECKED;
                 auto duration = SendMessageW(GetDlgItem(window, 218), CB_GETCURSEL, 0, 0);
                 if (duration >= 0 && duration < 30) cue_seconds = static_cast<UINT>(duration + 1);
                 if (cue) cue->hide();
@@ -715,10 +720,42 @@ void show_about() {
     update_icons(true);
     ShowWindow(about_window, SW_SHOW); SetForegroundWindow(about_window);
 }
+// Startup check: list Chrome profiles whose extension records lack HypeTabs and offer to open
+// chrome://extensions in each so the user can load the installed extension folder there.
+void prompt_missing_profiles() {
+    std::vector<wchar_t> module(32768);
+    DWORD size = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
+    if (!size || size >= module.size()) return;
+    std::wstring folder(module.data(), size); folder = folder.substr(0, folder.find_last_of(L'\\') + 1) + L"extension";
+    if (GetFileAttributesW((folder + L"\\manifest.json").c_str()) == INVALID_FILE_ATTRIBUTES) return; // no installed extension to load
+    auto profiles = hype::profiles::scan(hype::profiles::default_user_data(), folder, hype::profiles::registered_extension_id());
+    std::erase_if(profiles, [](const auto& profile) { return profile.integrated; });
+    if (profiles.empty()) return;
+    auto chrome = hype::profiles::chrome_executable();
+    std::wstring message = profiles.size() == 1 ? L"This Chrome profile does not have the HypeTabs extension yet:\n" : L"These Chrome profiles do not have the HypeTabs extension yet:\n";
+    size_t listed = 0;
+    for (const auto& profile : profiles) { if (listed++ == 8) { message += L"    …\n"; break; } message += L"    " + profile.name + L"\n"; }
+    message += L"\nHypeTabs can only find tabs in profiles where the extension is loaded.\n\nExtension folder (copied to the clipboard when you choose Yes):\n" + folder +
+        (chrome.empty() ? L"\n\nChrome could not be located. Open chrome://extensions in each profile, turn on Developer mode, choose Load unpacked, and select that folder."
+                        : L"\n\nOpen chrome://extensions in each of these profiles now? Turn on Developer mode, choose Load unpacked, and select that folder.") +
+        L"\n\nYou can turn this check off in Options.";
+    if (MessageBoxW(nullptr, message.c_str(), L"HypeTabs — Chrome profiles", (chrome.empty() ? MB_OK : MB_YESNO) | MB_ICONINFORMATION | MB_SETFOREGROUND) != IDYES) return;
+    if (OpenClipboard(nullptr)) {
+        EmptyClipboard();
+        if (HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (folder.size() + 1) * sizeof(wchar_t))) {
+            if (auto target = static_cast<wchar_t*>(GlobalLock(memory))) { std::copy(folder.begin(), folder.end(), target); target[folder.size()] = L'\0'; GlobalUnlock(memory); }
+            if (!SetClipboardData(CF_UNICODETEXT, memory)) GlobalFree(memory);
+        }
+        CloseClipboard();
+    }
+    bool failed = false;
+    for (const auto& profile : profiles) failed |= !hype::profiles::open_extensions_page(chrome, profile.directory);
+    if (failed) MessageBoxW(nullptr, L"Some Chrome profiles could not be opened. Open chrome://extensions in them yourself and load the extension folder.", L"HypeTabs", MB_OK | MB_ICONINFORMATION);
+}
 void show_options() {
     if (cue) cue->hide();
     if (!options_window) options_window = CreateWindowExW(WS_EX_APPWINDOW, L"HypeTabsOptions", L"HypeTabs options",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VSCROLL | WS_HSCROLL, CW_USEDEFAULT, CW_USEDEFAULT, 475, 800, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VSCROLL | WS_HSCROLL, CW_USEDEFAULT, CW_USEDEFAULT, 475, 832, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (options_layout) options_layout->fit();
     update_icons(true);
     ShowWindow(options_window, SW_SHOW); SetForegroundWindow(options_window);
@@ -917,7 +954,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             if (ReadFile(file, &settings, sizeof(settings), &read, nullptr)) {
                 WORD value{};
                 if (read == 2) value = static_cast<WORD>(settings.magic & 0xffff);
-                else if (((read == 16 && settings.version == 2) || (read == 24 && (settings.version == 3 || settings.version == 4)) || (read == 32 && settings.version == 5) || (read == sizeof(settings) && settings.version == 6)) &&
+                else if (((read == 16 && settings.version == 2) || (read == 24 && (settings.version == 3 || settings.version == 4)) || (read == 32 && settings.version == 5) || (read == sizeof(settings) && (settings.version == 6 || settings.version == 7))) &&
                     settings.magic == 0x48545032 && settings.days <= 7 && settings.history_floor >= 0 && settings.history_floor <= 9007199254740991LL) {
                     value = settings.shortcut; browser.retention_days = settings.days; browser.history_floor = settings.history_floor;
                     if (settings.version >= 3 && settings.cue_seconds >= 1 && settings.cue_seconds <= 30 && settings.guided <= 1) {
@@ -927,6 +964,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                         if (settings.version >= 5 && (settings.cue_color & 0xff000000) == 0) cue_color = settings.cue_color;
                         if (settings.version >= 6 && settings.widget_width >= widget_min_width && settings.widget_height >= widget_min_height &&
                             settings.widget_width <= 8192 && settings.widget_height <= 8192) { widget_width = settings.widget_width; widget_height = settings.widget_height; }
+                        if (settings.version >= 7 && settings.skip_profile_check <= 1) profile_check = settings.skip_profile_check == 0;
                     }
                 }
                 if (valid_shortcut(value)) shortcut = value;
@@ -972,6 +1010,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 MessageBoxW(nullptr, L"The sign-in registration could not be updated. You can retry in Options.", L"HypeTabs", MB_OK | MB_ICONINFORMATION);
         }
     }
+    if (!isolated_data && profile_check) prompt_missing_profiles();
     shortcut_registered = bind_shortcut(shortcut);
     if (!shortcut_registered) {
         MessageBoxW(nullptr, L"The search shortcut is already in use. Choose another in Options.", L"HypeTabs", MB_OK | MB_ICONINFORMATION); show_options();

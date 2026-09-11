@@ -27,6 +27,10 @@ if errorlevel 1 exit /b 1
 cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /O2 /MT tests\startup_tests.cpp /Febuild\startup_tests.exe /Fobuild\startup_tests.obj /link ole32.lib advapi32.lib
 if errorlevel 1 exit /b 1
 build\startup_tests.exe
+if errorlevel 1 exit /b 1
+cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE /DNOMINMAX tests\profile_setup_tests.cpp /Febuild\profile_setup_tests.exe /Fobuild\profile_setup_tests.obj /link ole32.lib shell32.lib advapi32.lib
+if errorlevel 1 exit /b 1
+build\profile_setup_tests.exe
 set result=%errorlevel%
 popd
 exit /b %result%
