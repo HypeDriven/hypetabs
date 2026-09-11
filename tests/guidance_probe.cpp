@@ -51,7 +51,9 @@ LRESULT send(HWND window, UINT message, WPARAM w = 0, LPARAM l = 0) {
 bool expect_outline = false; // reduced motion: every cue must be the static outline, never the arrow
 bool cue_near(RECT cue, RECT target) {
     bool outline = cue.left == target.left - 3 && cue.top == target.top - 3 && cue.right == target.right + 3 && cue.bottom == target.bottom + 3;
-    bool arrow = cue.bottom == target.top && (cue.left + cue.right) / 2 >= target.left && (cue.left + cue.right) / 2 <= target.right;
+    bool centered = (cue.left + cue.right) / 2 >= target.left && (cue.left + cue.right) / 2 <= target.right;
+    // Arrows sit above the taskbar button and below the tab header.
+    bool arrow = centered && (cue.bottom == target.top || cue.top == target.bottom);
     return expect_outline ? outline : (outline || arrow);
 }
 bool injected_down = false;
@@ -177,7 +179,7 @@ int wmain(int argc, wchar_t** argv) {
         auto tab = hype::locate_tab(browser, L"HypeTabs live browser tab", 1, stop);
         RECT second{}; GetWindowRect(cue, &second);
         require(tab.found && cue_near(second, tab.rectangle), "second cue did not identify the actual selected tab header");
-        { RECT wide = around(second, tab.rectangle, 0); wide.left -= 160; wide.right += 260; wide.top -= 16; wide.bottom += 60; capture(wide, L"cue-tab.png"); }
+        { RECT wide = around(second, tab.rectangle, 0); wide.left -= 160; wide.right += 260; wide.top -= 16; wide.bottom += 24; capture(wide, L"cue-tab.png"); }
         RECT area{}; GetWindowRect(browser, &area); POINT content{area.right - 60, area.bottom - 70};
         require(GetAncestor(WindowFromPoint(content), GA_ROOT) == browser, "final test click would miss owned Chrome window");
         move_to(content); input(MOUSEEVENTF_LEFTDOWN); pump(50);

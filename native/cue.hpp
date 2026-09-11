@@ -8,7 +8,9 @@ class CueOverlay {
     HWND window{}, owner{};
     HHOOK mouse{}, keyboard{};
     HWINEVENTHOOK changes{}, foreground{};
-    bool outline = false;
+    bool outline = false, points_up = false;
+    // CLR_INVALID selects the system highlight color; anything else is the user's choice.
+    COLORREF color_override = CLR_INVALID;
     HWND taskbar{}, continuation_window{};
     UINT continuation_message{};
     RECT taskbar_button{};
@@ -93,11 +95,16 @@ class CueOverlay {
         case WM_PAINT: {
             PAINTSTRUCT paint{}; HDC dc = BeginPaint(handle, &paint); RECT area{}; GetClientRect(handle, &area);
             HBRUSH background = CreateSolidBrush(transparent); FillRect(dc, &area, background); DeleteObject(background);
-            COLORREF color = GetSysColor(COLOR_HIGHLIGHT);
+            COLORREF color = self && self->color_override != CLR_INVALID ? self->color_override : GetSysColor(COLOR_HIGHLIGHT);
             HPEN pen = CreatePen(PS_SOLID, 2, color); auto old_pen = SelectObject(dc, pen);
             HBRUSH brush = CreateSolidBrush(color); auto old_brush = SelectObject(dc, brush);
             if (self && self->outline) {
                 SelectObject(dc, GetStockObject(HOLLOW_BRUSH)); Rectangle(dc, 1, 1, area.right - 1, area.bottom - 1);
+            } else if (self && self->points_up) {
+                // Below the target, tip at the top edge.
+                LONG x = area.right / 2, y = area.bottom - 2;
+                POINT shape[]{{x-4,y},{x+4,y},{x+4,17},{x+12,17},{x,2},{x-12,17},{x-4,17}};
+                Polygon(dc, shape, 7);
             } else {
                 LONG x = area.right / 2, y = area.bottom - 2;
                 POINT shape[]{{x-4,2},{x+4,2},{x+4,y-15},{x+12,y-15},{x,y},{x-12,y-15},{x-4,y-15}};
@@ -127,7 +134,10 @@ public:
         return true;
     }
     uint64_t generation() const { return version; }
-    bool show(RECT target, HWND target_window, UINT timeout = 5000, bool reduced_motion = false) {
+    void set_color(COLORREF value) { color_override = value; }
+    // below: place the arrow under the target pointing up (tab headers sit at
+    // the top of usually maximized windows); default is above, pointing down.
+    bool show(RECT target, HWND target_window, UINT timeout = 5000, bool reduced_motion = false, bool below = false) {
         hide(); if (current && current != this) current->hide();
         int64_t width = static_cast<int64_t>(target.right) - target.left, height = static_cast<int64_t>(target.bottom) - target.top;
         if (!window || width < 1 || height < 1 || width > 32768 || height > 32768 ||
@@ -140,10 +150,11 @@ public:
         int arrow_height = MulDiv(42, static_cast<int>(dpi), 96), arrow_width = MulDiv(32, static_cast<int>(dpi), 96);
         BOOL animations = TRUE;
         if (!reduced_motion && SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0)) reduced_motion = !animations;
-        outline = reduced_motion || target.top - arrow_height < monitor.rcWork.top;
+        outline = reduced_motion || (below ? target.bottom + arrow_height > monitor.rcWork.bottom : target.top - arrow_height < monitor.rcWork.top);
+        points_up = below && !outline;
         int x, y, w, h;
         if (outline) { x = target.left - 3; y = target.top - 3; w = static_cast<int>(width) + 6; h = static_cast<int>(height) + 6; }
-        else { x = target.left + static_cast<int>(width) / 2 - arrow_width / 2; y = target.top - arrow_height; w = arrow_width; h = arrow_height; }
+        else { x = target.left + static_cast<int>(width) / 2 - arrow_width / 2; y = below ? target.bottom : target.top - arrow_height; w = arrow_width; h = arrow_height; }
         owner = target_window; current = this;
         mouse = SetWindowsHookExW(WH_MOUSE_LL, mouse_proc, GetModuleHandleW(nullptr), 0);
         keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, key_proc, GetModuleHandleW(nullptr), 0);

@@ -64,6 +64,14 @@ int main() {
         "reduced-motion cue must surround the target instead of placing an arrow above it");
     check(GetForegroundWindow() == before, "outline cue stole focus");
     cue.hide(); check(!cue.monitoring(), "outline cleanup left hooks installed");
+    check(cue.show(target, nullptr, 5000, false, true), "show arrow below target");
+    RECT below_rect{}; GetWindowRect(cue.handle(), &below_rect);
+    BOOL animations = TRUE; SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
+    bool below_arrow = below_rect.top == target.bottom && (below_rect.left + below_rect.right) / 2 >= target.left && (below_rect.left + below_rect.right) / 2 <= target.right;
+    bool below_outline = below_rect.left == target.left - 3 && below_rect.top == target.top - 3 && below_rect.right == target.right + 3 && below_rect.bottom == target.bottom + 3;
+    // Windows' animation policy selects the outline even for arrow requests.
+    check(animations ? below_arrow : below_outline, "below arrow must start at the target's bottom edge and stay centered (or outline when animations are off)");
+    cue.set_color(RGB(200, 30, 30)); cue.hide();
     check(cue.show(target, nullptr, 200), "show cue"); pump(20);
     check(cue.visible() && cue.monitoring(), "cue not visible or monitoring");
     check(GetForegroundWindow() == before, "cue stole focus");
@@ -179,5 +187,5 @@ int main() {
     DestroyWindow(taskbar_fixture); taskbar_fixture = nullptr;
     SetCursorPos(saved_cursor.x, saved_cursor.y);
     DestroyWindow(own); if (IsWindow(original)) SetForegroundWindow(original);
-    std::cout << "Cue click-through, dismissal, taskbar release/foreground continuation, repeated click, minimized restore, cancellation, timeout and cleanup checks passed\n";
+    std::cout << "Cue click-through, below-target arrow, dismissal, taskbar release/foreground continuation, repeated click, minimized restore, cancellation, timeout and cleanup checks passed\n";
 }

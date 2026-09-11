@@ -53,7 +53,7 @@ public:
         if (suggested) position = *suggested;
         MONITORINFO monitor{sizeof(monitor)};
         if (!GetMonitorInfoW(MonitorFromRect(&position, MONITOR_DEFAULTTONEAREST), &monitor)) return;
-        RECT size{0, 0, scale(470), scale(691)};
+        RECT size{0, 0, scale(470), scale(731)};
         AdjustWindowRectExForDpi(&size, static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE)), FALSE,
             static_cast<DWORD>(GetWindowLongPtrW(window, GWL_EXSTYLE)), static_cast<UINT>(dpi));
         LONG width = std::min(size.right - size.left, monitor.rcWork.right - monitor.rcWork.left);

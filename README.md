@@ -12,11 +12,11 @@ Captured from an isolated host fed with synthetic profiles by `tools\screenshots
 
 ### How guidance works
 
-Pick a result and press Enter. If the tab's Chrome window is not in front, HypeTabs does not steal focus: it selects the tab in the background and points at that window's taskbar button. When you click the button, the cue disappears and a second cue points at the tab header in the window that just came forward. Any other click or Escape dismisses a cue; direct activation is used whenever a position cannot be verified.
+Pick a result and press Enter. If the tab's Chrome window is not in front, HypeTabs does not steal focus: it selects the tab in the background and points at that window's taskbar button. When you click the button, the cue disappears and a second cue points at the tab header in the window that just came forward. Any other click or Escape dismisses a cue; direct activation is used whenever a position cannot be verified. The cue colour can be changed in Options.
 
-| 1. Arrow at the taskbar button of the window that holds the tab | 2. Arrow at the tab header after the window comes forward |
+| 1. Arrow at the taskbar button of the window that holds the tab | 2. Arrow under the tab header after the window comes forward |
 | --- | --- |
-| ![Arrow cue above the Chrome taskbar button](docs/screenshots/cue-taskbar.png) | ![Arrow cue above the selected Chrome tab header](docs/screenshots/cue-tab.png) |
+| ![Arrow cue above the Chrome taskbar button](docs/screenshots/cue-taskbar.png) | ![Arrow cue below the selected Chrome tab header](docs/screenshots/cue-tab.png) |
 
 With Windows animation effects off, or the "Use outline cues (reduced motion)" option, the same two stages draw a static outline instead:
 

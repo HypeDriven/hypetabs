@@ -2,9 +2,11 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <shlobj.h>
 #include <tlhelp32.h>
 #include <string>
+#include <cstddef>
 #include <cwctype>
 #include <vector>
 #include "core.hpp"
@@ -60,8 +62,12 @@ std::optional<Guidance> guidance;
 hype::PendingRequests pending_requests;
 std::unique_ptr<hype::HistoryStore> history_store;
 bool history_save_armed = false;
-struct SavedSettings { uint32_t magic = 0x48545032; uint16_t shortcut{}; uint8_t days = 7; uint8_t version = 4; int64_t history_floor = 0; uint32_t cue_seconds = 5; uint8_t guided = 1; uint8_t reduced_motion = 0; uint8_t reserved[2]{}; };
-static_assert(sizeof(SavedSettings) == 24);
+// Version 5 appends the cue color (COLORREF; CLR_INVALID = system highlight) to the 24-byte version 4 record.
+struct SavedSettings { uint32_t magic = 0x48545032; uint16_t shortcut{}; uint8_t days = 7; uint8_t version = 5; int64_t history_floor = 0; uint32_t cue_seconds = 5; uint8_t guided = 1; uint8_t reduced_motion = 0; uint8_t reserved[2]{}; uint32_t cue_color = CLR_INVALID; };
+COLORREF cue_color = CLR_INVALID, pending_cue_color = CLR_INVALID;
+COLORREF custom_colors[16]{};
+static_assert(sizeof(SavedSettings) == 32); // 24-byte version 4 record plus color and alignment padding
+static_assert(offsetof(SavedSettings, cue_color) == 24);
 constexpr UINT browser_message = WM_APP + 2;
 std::vector<size_t> matches;
 std::vector<std::wstring> match_keys;
@@ -108,7 +114,7 @@ bool save_settings() {
     HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;
-    SavedSettings settings; settings.shortcut = shortcut; settings.days = static_cast<uint8_t>(browser.retention_days); settings.history_floor = browser.history_floor; settings.cue_seconds = cue_seconds; settings.guided = guided ? 1 : 0; settings.reduced_motion = reduced_motion ? 1 : 0;
+    SavedSettings settings; settings.shortcut = shortcut; settings.days = static_cast<uint8_t>(browser.retention_days); settings.history_floor = browser.history_floor; settings.cue_seconds = cue_seconds; settings.guided = guided ? 1 : 0; settings.reduced_motion = reduced_motion ? 1 : 0; settings.cue_color = cue_color;
     bool ok = WriteFile(file, &settings, sizeof(settings), &written, nullptr) && written == sizeof(settings);
     if (ok) ok = FlushFileBuffers(file) != FALSE;
     CloseHandle(file);
@@ -537,8 +543,13 @@ LRESULT CALLBACK options_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         auto motion = control(window, L"BUTTON", L"Use outline cues (reduced motion)", WS_TABSTOP | BS_AUTOCHECKBOX, 220);
         options_layout->place(motion, 20, 613, 405, 26);
         SendMessageW(motion, BM_SETCHECK, reduced_motion ? BST_CHECKED : BST_UNCHECKED, 0);
+        auto color_label = control(window, L"STATIC", L"Cue colour", 0, 0); options_layout->place(color_label, 20, 651, 130, 24);
+        auto swatch = control(window, L"STATIC", L"", SS_OWNERDRAW, 223); options_layout->place(swatch, 160, 649, 40, 26);
+        auto pick = control(window, L"BUTTON", L"Choose…", WS_TABSTOP, 222); options_layout->place(pick, 210, 647, 100, 30);
+        auto system_color = control(window, L"BUTTON", L"System", WS_TABSTOP, 224); options_layout->place(system_color, 320, 647, 105, 30);
+        pending_cue_color = cue_color;
         auto about = control(window, L"STATIC", L"Developed by hypedriven.com", SS_NOTIFY | SS_RIGHT, 221);
-        options_layout->place(about, 20, 651, 405, 20);
+        options_layout->place(about, 20, 691, 405, 20);
         if (theme) theme->apply(window);
         options_layout->set_dpi(GetDpiForWindow(window));
         refresh_profiles(window); return 0;
@@ -556,7 +567,23 @@ LRESULT CALLBACK options_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX: case WM_CTLCOLORBTN:
         if (theme) if (auto brush = theme->color(message, reinterpret_cast<HDC>(w), GetDlgCtrlID(reinterpret_cast<HWND>(l)) == 221)) return reinterpret_cast<LRESULT>(brush);
         break;
+    case WM_DRAWITEM:
+        if (w == 223) {
+            auto item = reinterpret_cast<DRAWITEMSTRUCT*>(l);
+            COLORREF shown = pending_cue_color != CLR_INVALID ? pending_cue_color : GetSysColor(COLOR_HIGHLIGHT);
+            HBRUSH fill = CreateSolidBrush(shown); FillRect(item->hDC, &item->rcItem, fill); DeleteObject(fill);
+            FrameRect(item->hDC, &item->rcItem, reinterpret_cast<HBRUSH>(GetStockObject(theme && theme->active() ? WHITE_BRUSH : BLACK_BRUSH)));
+            return TRUE;
+        }
+        break;
     case WM_COMMAND:
+        if (LOWORD(w) == 222) {
+            // Standard color dialog; the choice applies when options are saved.
+            CHOOSECOLORW choose{sizeof(choose)}; choose.hwndOwner = window; choose.lpCustColors = custom_colors;
+            choose.rgbResult = pending_cue_color != CLR_INVALID ? pending_cue_color : GetSysColor(COLOR_HIGHLIGHT); choose.Flags = CC_RGBINIT | CC_FULLOPEN;
+            if (ChooseColorW(&choose)) { pending_cue_color = choose.rgbResult & 0x00ffffff; InvalidateRect(GetDlgItem(window, 223), nullptr, TRUE); }
+        }
+        if (LOWORD(w) == 224) { pending_cue_color = CLR_INVALID; InvalidateRect(GetDlgItem(window, 223), nullptr, TRUE); }
         if (LOWORD(w) == 221 && HIWORD(w) == STN_CLICKED) open_developer_site();
         if (LOWORD(w) == 206 && HIWORD(w) == LBN_SELCHANGE) select_profile(window);
         if (LOWORD(w) == 208) {
@@ -603,6 +630,7 @@ LRESULT CALLBACK options_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
                     if (history_store) history_store->clear();
                 }
                 reduced_motion = SendMessageW(GetDlgItem(window, 220), BM_GETCHECK, 0, 0) == BST_CHECKED;
+                cue_color = pending_cue_color; if (cue) cue->set_color(cue_color);
                 guided = SendMessageW(GetDlgItem(window, 217), BM_GETCHECK, 0, 0) == BST_CHECKED;
                 auto duration = SendMessageW(GetDlgItem(window, 218), CB_GETCURSEL, 0, 0);
                 if (duration >= 0 && duration < 30) cue_seconds = static_cast<UINT>(duration + 1);
@@ -658,7 +686,7 @@ void show_about() {
 void show_options() {
     if (cue) cue->hide();
     if (!options_window) options_window = CreateWindowExW(WS_EX_APPWINDOW, L"HypeTabsOptions", L"HypeTabs options",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VSCROLL | WS_HSCROLL, CW_USEDEFAULT, CW_USEDEFAULT, 475, 760, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VSCROLL | WS_HSCROLL, CW_USEDEFAULT, CW_USEDEFAULT, 475, 800, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (options_layout) options_layout->fit();
     update_icons(true);
     ShowWindow(options_window, SW_SHOW); SetForegroundWindow(options_window);
@@ -725,7 +753,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         if (locator) {
             auto result = locator->take();
             if (result && cue && cue->monitoring() && result->generation == cue->generation()) {
-                if (result->found && GetForegroundWindow() == result->window) cue->show(result->rectangle, result->window, cue_seconds * 1000, reduced_motion);
+                if (result->found && GetForegroundWindow() == result->window) cue->show(result->rectangle, result->window, cue_seconds * 1000, reduced_motion, true);
                 else cue->hide();
             }
         }
@@ -834,11 +862,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             if (ReadFile(file, &settings, sizeof(settings), &read, nullptr)) {
                 WORD value{};
                 if (read == 2) value = static_cast<WORD>(settings.magic & 0xffff);
-                else if (((read == 16 && settings.version == 2) || (read == sizeof(settings) && (settings.version == 3 || settings.version == 4))) && settings.magic == 0x48545032 && settings.days <= 7 && settings.history_floor >= 0 && settings.history_floor <= 9007199254740991LL) {
+                else if (((read == 16 && settings.version == 2) || (read == 24 && (settings.version == 3 || settings.version == 4)) || (read == sizeof(settings) && settings.version == 5)) &&
+                    settings.magic == 0x48545032 && settings.days <= 7 && settings.history_floor >= 0 && settings.history_floor <= 9007199254740991LL) {
                     value = settings.shortcut; browser.retention_days = settings.days; browser.history_floor = settings.history_floor;
                     if (settings.version >= 3 && settings.cue_seconds >= 1 && settings.cue_seconds <= 30 && settings.guided <= 1) {
                         cue_seconds = settings.cue_seconds; guided = settings.guided != 0;
-                        if (settings.version == 4 && settings.reduced_motion <= 1) reduced_motion = settings.reduced_motion != 0;
+                        if (settings.version >= 4 && settings.reduced_motion <= 1) reduced_motion = settings.reduced_motion != 0;
+                        // Only opaque RGB values are accepted; anything else means the system color.
+                        if (settings.version == 5 && (settings.cue_color & 0xff000000) == 0) cue_color = settings.cue_color;
                     }
                 }
                 if (LOBYTE(value) && (HIBYTE(value) & (HOTKEYF_CONTROL | HOTKEYF_ALT))) shortcut = value;
@@ -868,7 +899,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (!main_window) { DeleteObject(ui_font); CloseHandle(singleton); return 1; }
     try { transport = std::make_unique<hype::Transport>(main_window, browser_message); }
     catch (const std::exception&) { MessageBoxW(main_window, L"The local browser connection could not start. Restart HypeTabs to retry.", L"HypeTabs", MB_OK | MB_ICONERROR); }
-    cue = std::make_unique<hype::CueOverlay>();
+    cue = std::make_unique<hype::CueOverlay>(); cue->set_color(cue_color);
     taskbar_created = RegisterWindowMessageW(L"TaskbarCreated"); add_tray();
     if (!isolated_data) {
         // First run: offer sign-in startup once, then persist settings so the question is not repeated.

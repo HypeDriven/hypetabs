@@ -3,7 +3,7 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native-probe-ui.ps1')
 Add-Type -AssemblyName System.Drawing
-Add-Type -Namespace HypeTabsShot -Name Native -MemberDefinition '[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string c, string t); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);'
+Add-Type -Namespace HypeTabsShot -Name Native -MemberDefinition '[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string c, string t); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);'
 function Write-Frame($pipe, $value) {
     $bytes = [Text.Encoding]::UTF8.GetBytes(($value | ConvertTo-Json -Compress)); $size = [BitConverter]::GetBytes([uint32]$bytes.Length)
     $pipe.Write($size, 0, 4); $pipe.Write($bytes, 0, $bytes.Length); $pipe.Flush()
@@ -15,9 +15,11 @@ function Read-Frame($pipe) {
     return [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
 }
 function Shot($hwnd, $path) {
+    # PrintWindow renders the window itself, so other windows on the desktop never leak into the capture.
     $r = New-Object HypeTabsNativeProbe+Rect; [void][HypeTabsNativeProbe]::GetWindowRect($hwnd, [ref]$r)
     $bmp = New-Object System.Drawing.Bitmap ($r.right - $r.left), ($r.bottom - $r.top); $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($r.left, $r.top, 0, 0, $bmp.Size); $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.Dispose()
+    $dc = $g.GetHdc(); [void][HypeTabsShot.Native]::PrintWindow($hwnd, $dc, 2); $g.ReleaseHdc($dc)
+    $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.Dispose()
 }
 # Physical pixels for window rectangles and screen copies on mixed-DPI desktops.
 [void][HypeTabsNativeProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
