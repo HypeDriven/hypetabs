@@ -735,10 +735,8 @@ void prompt_missing_profiles() {
     std::wstring message = profiles.size() == 1 ? L"This Chrome profile does not have the HypeTabs extension yet:\n" : L"These Chrome profiles do not have the HypeTabs extension yet:\n";
     size_t listed = 0;
     for (const auto& profile : profiles) { if (listed++ == 8) { message += L"    …\n"; break; } message += L"    " + profile.name + L"\n"; }
-    message += L"\nHypeTabs can only find tabs in profiles where the extension is loaded.\n\nExtension folder (copied to the clipboard when you choose Yes):\n" + folder +
-        (chrome.empty() ? L"\n\nChrome could not be located. Open chrome://extensions in each profile, turn on Developer mode, choose Load unpacked, and select that folder."
-                        : L"\n\nOpen chrome://extensions in each of these profiles now? Turn on Developer mode, choose Load unpacked, and select that folder.") +
-        L"\n\nYou can turn this check off in Options.";
+    message += L"\nHypeTabs can only find tabs in profiles where the extension is loaded.\n\nIn each profile, type chrome://extensions in the address bar, turn on Developer mode, choose Load unpacked, and paste this folder (copied to the clipboard when you choose Yes):\n" + folder +
+        (chrome.empty() ? L"\n\nChrome could not be located, so open those profiles yourself." : L"\n\nOpen a window for each of these profiles now?") + L"\n\nYou can turn this check off in Options.";
     if (MessageBoxW(nullptr, message.c_str(), L"HypeTabs — Chrome profiles", (chrome.empty() ? MB_OK : MB_YESNO) | MB_ICONINFORMATION | MB_SETFOREGROUND) != IDYES) return;
     if (OpenClipboard(nullptr)) {
         EmptyClipboard();
@@ -749,8 +747,8 @@ void prompt_missing_profiles() {
         CloseClipboard();
     }
     bool failed = false;
-    for (const auto& profile : profiles) failed |= !hype::profiles::open_extensions_page(chrome, profile.directory);
-    if (failed) MessageBoxW(nullptr, L"Some Chrome profiles could not be opened. Open chrome://extensions in them yourself and load the extension folder.", L"HypeTabs", MB_OK | MB_ICONINFORMATION);
+    for (const auto& profile : profiles) failed |= !hype::profiles::open_profile(chrome, profile.directory);
+    if (failed) MessageBoxW(nullptr, L"Some Chrome profiles could not be opened. Open them yourself, go to chrome://extensions, and load the extension folder.", L"HypeTabs", MB_OK | MB_ICONINFORMATION);
 }
 void show_options() {
     if (cue) cue->hide();

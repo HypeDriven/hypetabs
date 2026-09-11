@@ -38,7 +38,7 @@ int main() {
     for (auto file : {L"\\Local State", L"\\Default\\Secure Preferences", L"\\Profile 1\\Preferences", L"\\Profile 2\\Preferences"}) DeleteFileW((root + file).c_str());
     for (auto dir : {L"Default", L"Profile 1", L"Profile 2", L"System Profile"}) RemoveDirectoryW((root + L"\\" + dir).c_str());
     check(RemoveDirectoryW(root.c_str()) != FALSE, "temporary directory cleanup");
-    check(!open_extensions_page(L"C:\\nowhere\\chrome.exe", L"Default") && !open_extensions_page(L"", L"Default"), "missing browser is reported, not launched");
+    check(!open_profile(L"C:\\nowhere\\chrome.exe", L"Default") && !open_profile(L"", L"Default"), "missing browser is reported, not launched");
     // ID observed from Chrome for Testing 153 loading this exact folder; the drive letter is the only normalized character.
     check(hype::deploy::unpacked_extension_id(L"C:\\Users\\albert\\AppData\\Local\\Temp\\HypeTabs-IdCheck\\Ext") == "cooobhcladbligealjdhbfbglceiebik", "unpacked extension ID matches Chrome");
     check(hype::deploy::unpacked_extension_id(L"c:\\Users\\albert\\AppData\\Local\\Temp\\HypeTabs-IdCheck\\Ext") == "cooobhcladbligealjdhbfbglceiebik", "lower-case drive letter is normalized");

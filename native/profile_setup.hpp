@@ -191,10 +191,12 @@ inline std::wstring chrome_executable() {
     }
     return {};
 }
-// Opens chrome://extensions in one profile via structured process creation (no shell involved).
-inline bool open_extensions_page(const std::wstring& chrome, const std::wstring& directory) {
+// Brings one profile's window forward (opening one if needed) via structured process creation, no
+// shell involved. Chrome drops chrome:// URLs given on the command line, so the user is told to type
+// chrome://extensions there; the profile switch itself is honored by the running browser.
+inline bool open_profile(const std::wstring& chrome, const std::wstring& directory) {
     if (chrome.empty() || !valid_directory(directory)) return false;
-    std::wstring command = L"\"" + chrome + L"\" \"--profile-directory=" + directory + L"\" chrome://extensions";
+    std::wstring command = L"\"" + chrome + L"\" --profile-directory=\"" + directory + L"\"";
     STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
     if (!CreateProcessW(chrome.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &startup, &process)) return false;
     CloseHandle(process.hThread); CloseHandle(process.hProcess); return true;
