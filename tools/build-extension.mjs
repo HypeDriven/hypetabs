@@ -1,0 +1,10 @@
+import { stripTypeScriptTypes } from 'node:module';
+import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
+const root = new URL('../', import.meta.url);
+const out = new URL('build/extension/', root);
+await mkdir(out, { recursive: true });
+const source = await readFile(new URL('extension/src/worker.ts', root), 'utf8');
+const js = stripTypeScriptTypes(source, { mode: 'strip' });
+await writeFile(new URL('worker.js', out), js);
+await copyFile(new URL('extension/manifest.json', root), new URL('manifest.json', out));
+console.log('Built extension with Node’s built-in TypeScript stripping; no packages installed.');

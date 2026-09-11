@@ -1,0 +1,13 @@
+# Dependency inventory
+
+Current native code uses the C++ standard library, Microsoft Visual C++ static runtime, and Windows SDK APIs/libraries: User32, Shell32, SHCore, Propsys, Comctl32, Advapi32, Ole32, OleAut32, UIAutomationCore, Gdi32, and Crypt32, plus the SDK's WRL COM helpers. SHCore supplies monitor-scale validation for window identity. Build and smoke scripts use Windows Command Prompt and Windows PowerShell. UI probes use Windows-provided UI Automation and Windows Forms for guarded synthetic keyboard input. No third-party application runtime packages have been added.
+
+The baseline TypeScript extension is built using the installed Node 24 built-in TypeScript stripping API. Tests use Node standard modules. No npm packages are installed. The complete Chrome steady-state comparison remains outstanding.
+
+The user approved temporary WASI SDK 27 compiler tooling for the experiment. Download: [official release](https://github.com/WebAssembly/wasi-sdk/releases/tag/wasi-sdk-27), asset `wasi-sdk-27.0-x86_64-linux.tar.gz`, 124,790,235 bytes, SHA256 `b7d4d944c88503e4f21d84af07ac293e3440b1b6210bfd7fe78e0afd92c23bc2`, verified against GitHub release-asset metadata before extraction. The compiler is at `/tmp/hypetabs-wasi-toolchain/wasi-sdk-27.0-x86_64-linux/bin/clang++`; `HYPETABS_WASI_CXX` can override that location. This is an approved LLVM-based build-tool exception, not an application runtime addition. Compilation uses `-nostdlib`, no WASI imports, and no exception/RTTI runtime. The compiler archive, extracted SDK, and experimental output are excluded from application packaging.
+
+Unicode search uses Windows National Language Support through Kernel32 (`LCMapStringEx` and `GetStringTypeW`), with direct ASCII checks. No Unicode data package or text-processing library is bundled.
+
+Live browser testing uses Google's first-party Chrome for Testing 153.0.8010.36 for Windows x64, downloaded from the published Google HTTPS endpoint and kept in `%TEMP%\HypeTabs-CfT-153.0.8010.36`. Its archive SHA256 is `8EDFAA0923C11A30A9315A5E7E5794C5EFB60146EDEA7E3F749F7FDC2AA026CB`. The executable is unsigned; this digest identifies the fetched artifact and is not independent publisher authentication. The browser and its archive are excluded from application/release assets. Tests use PowerShell's built-in HTTP and WebSocket facilities; no browser automation package or driver is added.
+
+The tray application and taskbar association probe link Windows `Propsys.lib` and `Shell32.lib` to read the window's AppUserModelID through the shell property store. These are Windows SDK/platform libraries, not third-party additions.

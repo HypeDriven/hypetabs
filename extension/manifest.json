@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "HypeTabs",
+  "version": "0.1.0",
+  "description": "Find tabs across Chrome profiles with the local HypeTabs tray application.",
+  "minimum_chrome_version": "121",
+  "permissions": ["tabs", "nativeMessaging", "storage", "alarms", "sessions", "system.display"],
+  "incognito": "not_allowed",
+  "background": { "service_worker": "worker.js" },
+  "action": { "default_title": "Reconnect HypeTabs" }
+}

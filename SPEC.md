@@ -1,0 +1,167 @@
+# HypeTabs specification
+
+## Purpose and scope
+
+HypeTabs helps users find a Chrome tab when they have lost track of its window, Chrome profile, or whether they recently closed it. A lightweight system tray application provides a configurable global shortcut, a search overlay, and visual guidance to the selected tab. Recently closed tabs can be reopened in their original Chrome profile.
+
+This is the initial specification for a greenfield application, prepared under `AGENTS.md`. There is no prior specification to conflict with. Windows 11 desktop and Google Chrome are the initial target, inferred from the requested tray and taskbar experience. Other operating systems and browsers are outside the initial scope.
+
+## Main workflow
+
+1. The application runs in the system tray without a permanent taskbar window.
+2. A configurable global shortcut opens a compact search overlay on the monitor containing the foreground window and focuses its input. Repeating the shortcut dismisses it.
+3. Typing immediately filters a short list of plausible matches across connected Chrome windows and profiles, including retained recently closed tabs.
+4. Each result shows its title, site, profile label, window context, and open or recently closed status. Recently closed results include their closure time. The interface distinguishes similar tabs without requiring the user to understand internal identifiers.
+5. Clicking a result or pressing Enter selects it. Up and Down change the selection; Escape dismisses the overlay and returns focus to the previous application.
+6. An open-tab result starts the guidance flow below. A closed-tab result is reopened in its original profile and brought into view.
+
+An empty search shows a few recently used tabs. No matches, unavailable profiles, missing browser integration, and shortcut conflicts have clear, brief messages with actionable next steps. Search must remain usable when only some profiles are connected.
+
+## Finding an open tab
+
+- Revalidate the result before acting: tabs can move, close, navigate, or change windows after the search list appears.
+- Resolve the correct Chrome profile, window, and tab. Never select a similar-looking tab in a different profile as a substitute.
+- Dismiss the search overlay and show a temporary, noninteractive arrow or outline identifying the relevant taskbar icon or taskbar window preview, when its position can be determined reliably. Grouped Chrome icons must not be presented as identifying a unique window when they do not.
+- When the user brings the target Chrome window forward, show a temporary cue at the actual tab header if its position can be determined reliably. A second cue may appear after the taskbar activation click has completed; the first cue must already have disappeared.
+- Every visible cue disappears immediately on any subsequent mouse click, including clicks in other applications. The click selecting the search result must not dismiss the cue it creates. Escape, cancellation, target disappearance, and a configurable timeout also dismiss guidance; the default timeout is five seconds per cue. Clicking elsewhere cancels pending guidance, so it cannot reappear unexpectedly.
+- Cues never intercept clicks, steal focus, or obscure interactive controls. Pointer monitoring exists only while guidance is active and does not record user input.
+- Handle multiple monitors, display scaling, maximized and minimized windows, taskbar grouping, pinned tabs, and tab groups. A hidden tab must not be assigned a fabricated screen position.
+- If exact visual guidance is unavailable, foreground the correct window and activate the selected tab directly, with a brief explanation if necessary. Provide this direct activation behavior as an alternative option to guided navigation.
+- If Windows prevents foreground activation, offer an explicit user action to focus the window. Do not bypass operating system focus protections.
+- Distinguish a selected tab whose window stayed in the background from an unavailable tab. Clicking its notification reopens search for an explicit retry and explains that the user can open Chrome from the taskbar. Clicking a notification while search is already visible must not dismiss it.
+
+Reliable browser-window matching and tab-header positioning are implementation feasibility gates. Validate them on supported Windows and Chrome versions before promising precise arrows; the direct activation fallback is required for the first release.
+
+Taskbar discovery must establish an association with the selected browser window independently of a generic Chrome button name or position. The locator compares the window's explicit Windows AppUserModelID with Explorer's exposed automation identity, requires one matching button on the target monitor, and rejects multiple visible windows sharing that identity. A live isolated-window probe passes this association and duplicate-group rejection on the current Windows 11 layout. Explorer's automation-ID format is an observed provider detail, so unknown formats use the fallback; it is not a documented HWND encoding. The host now invokes this locator on a background worker after preparation, checks the returned browser identity again, and advances through the cue continuation. Taskbar geometry changes and newly shown windows cancel the taskbar stage conservatively. Complete race handling, grouped-window previews, and physical taskbar acceptance remain open.
+
+The browser preparation command selects and revalidates the tab while leaving its window in the background. It returns bounded window geometry only if the tab is still active, non-incognito, and in that window after the asynchronous lookup. The host connects preparation to native target validation, taskbar cues, and subsequent tab activation/guidance. It skips preparation on desktops outside the currently validated 100% scale policy and uses direct activation. Failed preparation or unavailable taskbar discovery also falls back to a newly correlated activation, unless guidance was cancelled or expired. A preparation failure does not prove direct activation is impossible.
+
+The cue component supports a taskbar stage that hides immediately on a click. Only a left-button press and release inside the identified taskbar button, followed by the intended window becoming foreground, permits a continuation. Retain cancellation monitoring while that continuation is pending, so another click or Escape prevents delayed tab guidance. The integrated flow passes an isolated visible Chrome test at 96 DPI: background window, verified Explorer taskbar click, foreground target, actual selected tab-header cue, and dismissal on the next click. Grouped previews, other display layouts, and broader race/accessibility acceptance remain outstanding.
+
+Minimized Chrome windows are identified through their saved normal placement and receive the same taskbar cue as any other background window in guided mode. Explorer brings a minimized window to the foreground before Windows applies its restored placement, so the pending continuation accepts that single restore move; any later movement, hide, or destruction still cancels guidance. Minimized and maximized taskbar-to-tab guidance pass on the tested 96-DPI layout, and maximization is preserved. Direct mode continues to restore minimized windows and show the tab cue.
+
+Chrome reports `focused` from its own window state, which can disagree with the Windows foreground when another application holds it (for example after the search overlay hides and Windows activates a different window). Before the overlay hides, the host therefore grants the browser process that owns the connection (the chrome.exe ancestor of its bridge, which Chrome launches through cmd.exe) the one-time foreground permission Windows allows the current foreground process to delegate, so Chrome's own focus request is honored. Where geometry can be verified, the host additionally requests the location hint in direct mode and raises the verified Chrome window itself if Windows still has not brought it forward. If Windows still refuses, the request is reported as a focus failure and the existing notification offers explicit retry; no focus protection is bypassed and no cue is drawn on a window that is not in the foreground. A second visible window in the same profile shares Chrome's taskbar identity, so the taskbar cue is skipped and this direct path is used; that grouped-identity case passes the visible Chrome flow.
+
+Tab-header discovery uses bounded Windows UI Automation traversal, excludes webpage document subtrees, and requires a unique selected, visible tab header. Chrome exposes the header name as the tab title optionally followed by " - " and status text (for example "Pinned" or "Part of group <name>"); the locator accepts exactly the title or the title with such a suffix, and pinned, grouped, and collapsed-group tabs pass the visible taskbar-to-tab flow because Chrome expands a collapsed group when the prepared tab becomes selected. Native window matching requires unique visible Chromium-window bounds matching the extension's report and verification of the target's Chrome process and foreground status. With the user's approval the extension holds the `system.display` permission and reports each display's DIP bounds and DPI; the host pairs those displays with physical monitors (same DPI and primary flag, DIP size scaled by DPI within rounding, nearest scaled center, no ambiguity) and converts the window's DIP bounds to physical pixels, allowing up to 2 px of rounding and requiring the matched window's monitor DPI to agree. Without a usable layout, matching falls back to monitors where DIPs provably equal pixels: every monitor at 96 effective DPI, or the 96-DPI primary on a mixed desktop. The effective per-monitor DPI is the gate; `GetScaleFactorForMonitor` misreported a 125% monitor and is not used. Missing or ambiguous geometry uses direct activation. Chrome for Testing 153 exits in `--headless=new` when the worker calls `chrome.system.display.getInfo()`, so the test harness runs visible browsers; ordinary Chrome is unaffected. The integrated taskbar-to-tab flow is verified for the isolated layout described above; broader layout coverage remains required.
+
+## Recently closed tabs
+
+- Retain title, URL, profile identity, closure time, and available browser restoration information for tabs observed while integration was active. Import browser-provided recent closures when available; do not promise a complete history from before installation.
+- Prefer the browser's restoration mechanism when it can identify the selected closed tab. Otherwise reopen its recorded URL in the same profile. URL reopening does not promise restoration of form contents, scroll position, or navigation history.
+- Restore only the selected tab unless the browser requires a broader restoration action; obtain confirmation before restoring additional tabs or windows.
+- If the original profile is not running, start that profile only when its launch identity has been verified. If it cannot be identified or started safely, explain the limitation and offer retry after the user opens it. Never silently reopen in the default profile.
+- A restored tab becomes an open result, and the consumed closed entry must not remain as a duplicate restoration candidate.
+- Default retention is seven days and at most 1,000 closed entries across profiles, evicting the oldest first. The native host protects retained metadata with Windows user-scoped DPAPI, batches saves on a background thread, and atomically replaces the encrypted file. Clearing saved data invalidates queued saves and persists a closure-time cutoff so older browser-provided entries cannot immediately repopulate the results. Options allow shorter retention, disabling retention, and clearing saved data immediately.
+- Exclude incognito tabs from collection, search, and persistence. Limit automatic URL reopening to HTTP and HTTPS. Other schemes must not be executed from recorded search results.
+
+## Search behavior
+
+- Search tab titles, hostnames, URLs, and user-visible profile labels locally. Matching is case-insensitive and supports partial words, multiple query terms, and inexpensive typo tolerance.
+- Use Windows invariant case mapping for non-ASCII text and retain non-Latin letters, digits, combining marks, and supplementary characters in query terms. Non-Latin input must not silently become an empty query. Diacritics remain significant. ASCII text uses direct character checks to avoid unnecessary platform calls.
+- Rank exact and prefix matches above weaker matches; use open status and recent activity as tie-breakers. Clearly separate repeated tabs by profile and window rather than merging distinct open tabs.
+- Show up to eight results initially, with keyboard-accessible scrolling for additional matches. Preserve the selected result during background updates where possible.
+- Size the initial overlay from eight rows at the current font size, with DPI-aware controls and window borders. Fit smaller work areas by reducing visible space while keeping results scrollable; resizing may expose additional rows.
+- Home, End, Page Up, and Page Down navigate the focused results list without opening a tab. Home and End retain normal text-editing behavior in the search input.
+- Tab and Shift+Tab move between the search input and results. Selection notifications, including keyboard type-to-select, never open a result; activation requires Enter or a completed click on a result row.
+- Keep the search index in memory and update it incrementally. Cancel obsolete searches as the user types. No remote search, embeddings service, or cloud account is required.
+- Reuse indexed search text and tokens when only activity or window metadata changes. Identical tab updates and removal of an already absent tab must not trigger a results rebuild; title, URL, and profile-label changes must update search immediately.
+- Preserve the existing result-list controls and scroll position when result identities, order, and displayed text are unchanged. Reuse must compare full text and identity, so changes to profile/window/status or closure age cannot leave stale rows or activate the wrong tab.
+
+## Tray menu and options
+
+The tray icon's right-click menu provides Search, Options, Pause collection, and Exit. Closing Options leaves the tray application running; Exit stops the application and removes active overlays and shortcut registrations.
+
+Options scales control geometry and system fonts for the current monitor's DPI, preserving logical coordinates across monitor changes. Fit the window within the monitor's work area; provide native scrolling when the settings exceed the available space, and reveal focused controls during keyboard navigation.
+
+Options include:
+
+- Global shortcut capture, validation, conflict reporting, and reset. Choose a default during implementation after testing common Windows and Chrome conflicts; do not silently replace another application's shortcut.
+- Start at sign-in, disabled until the user enables it.
+- Connected profile labels and connection status, with setup instructions for profiles lacking integration. Users can rename a connected profile from Options; its extension saves the label in that profile's local storage and acknowledges it before the native host updates search results.
+- Guided navigation or direct activation, cue timeout, and reduced-motion behavior.
+  The persistent “Use outline cues (reduced motion)” preference replaces arrows with static outlines. Disabling Windows client-area animations also selects outlines at cue display time. All cue styles remain static and retain the same dismissal and timeout behavior. Existing settings versions migrate with the explicit outline preference disabled, while still respecting Windows.
+- Recently closed retention settings and Clear saved data.
+
+Pause collection stops incoming tab indexing and metadata persistence until resumed. Existing data remains subject to retention and can still be searched, activated, or explicitly restored; these actions do not resume background collection. Label disconnected or potentially stale results accordingly. Settings persist across restarts. Clearing saved data removes retained tab metadata immediately; currently open tabs may repopulate from connected profiles when collection is enabled.
+
+## Architecture and dependency policy
+
+- Use C++ for the desktop tray application, native messaging host, local indexing, and persistence, built with Visual Studio C++ tools and the Windows SDK. Use Windows-provided tray, hotkey, window, and accessibility facilities through supported platform interfaces. This explicitly supersedes the earlier C#/.NET desktop choice at the user's request; the general C# rule in `AGENTS.md` still applies to any separate greenfield backend service.
+- Use TypeScript or C++ compiled to WebAssembly for browser extension logic, with the minimal JavaScript bridge required by Chrome APIs. Compare steady-state CPU and memory on representative extension workloads before selecting the final implementation; even small repeatable improvements matter. Startup overhead is secondary because browser sessions may last days. The native desktop shell uses Windows controls through C++; avoid an embedded browser runtime for the search overlay solely for UI convenience.
+- Install a minimal Chrome extension separately in each participating profile. It reports tab lifecycle changes and handles tab activation and restoration in that profile. Provide an initial snapshot when connecting and reconcile state after reconnecting.
+- Use a browser-supported native messaging connection to the desktop host. `docs/PROTOCOL.md` defines the bounded, per-user local transport and profile-scoped message format. Keep the protocol small, versioned, and bounded. Avoid a listening HTTP server or externally reachable service.
+- Assign an opaque stable identity to each connected profile. Scope transient browser tab and window identifiers to that profile and browser connection lifetime. Reconcile after restart rather than assuming identifiers remain valid.
+- Do not read or modify Chrome's private profile databases, scrape browsing data from disk, or depend on undocumented profile layouts.
+- No third-party dependencies, including runtime packages, UI frameworks, search libraries, analytics SDKs, and bundled helper executables. Implement required logic with first-party platform and language facilities. Microsoft Windows SDK, Visual C++ toolchain, and Google Chrome platform components are allowed; standard language build tooling is allowed, without third-party plugins or libraries.
+- Do not add a third-party dependency without asking the user first. The user approved WASI SDK 27 as temporary experimental compiler tooling for the C++/WASM comparison. Keep it outside the application payload; link no SDK runtime libraries into the experiment. No third-party application runtime dependency is approved.
+
+## Security and privacy
+
+- Keep all tab metadata and searches on the current user's device. No telemetry or external network requests initiated by HypeTabs, including remote favicon fetching. Reopening a website naturally causes Chrome to access that website.
+- Collect only metadata needed for tab search and restoration. Bound titles to 1,000 UTF-16 code units and URLs to 8,192 UTF-8 bytes. Never retain a truncated URL as a restoration destination; tabs with oversized URLs remain findable by title while open. Do not collect page bodies, cookies, passwords, form data, or arbitrary page scripts. Request only the browser permissions needed for documented features.
+- Restrict native messaging to the installed extension and local IPC to the current user. Treat all incoming messages, tab metadata, URLs, and persisted state as untrusted.
+- Validate message types, sizes, identifiers, and allowed operations. Bound message rates and queues. Render titles and URLs as text; never interpret them as HTML or command strings.
+- Use explicit browser executable and profile launch parameters through structured process APIs. Never concatenate a URL or profile label into a shell command. Require a user-selected action before activating or reopening a tab.
+- Store data in the current user's application data directory with restrictive access and operating-system user-scoped protection for retained browsing metadata. Avoid sensitive URLs and titles in logs. Use bounded, opt-in diagnostic logging.
+- Do not require administrator privileges for ordinary operation. Never commit secrets or `.env` files.
+
+## Performance and footprint
+
+- Optimize for day-to-day resource use and responsiveness even below perceptible thresholds. The budgets below are ceilings, not stopping points: retain small, repeatable improvements when they preserve correctness, security, and required behavior. Measure CPU time, allocations, memory, wakeups, and latency across the complete path, including JavaScript/WASM conversion and native messaging; report measurement variability rather than treating noise as a gain. Extension loading time is a secondary consideration.
+- Select JavaScript or WASM by measured total daily cost, not language reputation or perceptibility. Include actual extension worker restarts during long browser sessions, cumulative CPU time, and retained memory across profiles. Accept additional startup work when its recurring savings justify it; do not assume an open browser keeps the extension worker resident. Check memory growth and resource cleanup during extended use.
+- Keep experimental WASM assets and the extension policy enabling WASM confined to disposable benchmark packages until the comparison justifies production adoption. A URL-kernel benchmark alone does not satisfy the complete-path performance gate.
+- Run the desktop host and any HypeTabs-owned background helpers at the lowest available Windows process scheduling priority, with background CPU and I/O policies where supported. Do not raise priority while searching or change Chrome's priority. Browser-managed extension scheduling remains under Chrome's control.
+- Prefer one resident host process, event-driven browser updates, incremental indexing, bounded queues, and batched disk writes. No continuous tab, window, or screen polling; use short-lived observation only during guidance when necessary.
+- Avoid temporary UTF-8 buffers for URL-size checks when UTF-16 length proves the result; encode only ambiguous lengths and normalize each imported URL once. Preserve the exact 8,192-byte limit and Unicode replacement behavior.
+- Skip search scoring work that cannot improve the current term's score, while preserving all results and their ordering. Compare optimizations against the previous behavior and measure native search at idle/background priority, including CPU cycles and elapsed time.
+- Do not capture screenshots or run OCR to locate tabs. Release overlays, accessibility observers, and global input monitoring promptly after use.
+- Initial measurement workload: 1,000 open tabs, 1,000 retained closed tabs, five connected profiles, and ten browser windows on a documented Windows 11 reference machine.
+- Acceptance budgets on that machine: host idle CPU below 0.1% averaged over five minutes without tab activity; host private working set at or below 75 MiB; warm shortcut-to-input-ready latency below 100 ms at the 95th percentile; query-to-results latency below 50 ms at the 95th percentile.
+- Target application-owned installed assets at or below 20 MiB, excluding Chrome. No .NET runtime is required. Count any bundled C++ runtime in the installed footprint and document any external runtime prerequisites and total fresh-install download size separately.
+- Measure extension memory and CPU separately, including aggregate cost across profiles. Report cold start and behavior under CPU contention with low priority enabled. Budgets are acceptance targets to verify, not existing benchmark claims.
+- Host-only measurements may feed synthetic metadata through the production local transport, but must identify that scope. Distinguish window-message response time from physical shortcut and rendering latency, and sampled private working set from peak memory. Report CPU percentage relative to one logical processor when using process CPU time divided by wall time.
+
+## Presentation conventions
+
+- The search overlay and Options window use a dark palette by default (`native/theme.hpp`: near-black window, dark fields, light text, muted secondary text), with the DWM immersive dark title bar and Explorer's dark visual style for scrollbars, lists, buttons, and check boxes. When a Windows high-contrast theme is active the system palette is used unchanged. The hotkey field keeps the system control colors (the common control does not participate in parent color messages).
+- The tray context menu lists every application window (Search, Options, About) plus Pause collection and Exit. The About window shows the version, a "Developed by hypedriven.com" link to `https://www.hypedriven.com`, and a link to the project's public repository page once one exists (the constant is empty until then, and the row is omitted). Options also carries a discreet right-aligned "Developed by hypedriven.com" link. Link targets are fixed constants passed to `ShellExecuteW`; no user or browser text is ever combined into them.
+- The tray and window icon is a tab-header glyph drawn at runtime (no resource files) whose color reports state: grey with no connected profile, blue when connected, amber while collection is paused, green while a tab activation or guidance request is in flight. It is redrawn only when the state changes.
+- On the first run (no settings file, non-isolated data directory) the application asks once whether to start at sign-in and records the answer by saving settings. On every later start it compares the sign-in registration with the running executable's path and, when the registration points elsewhere, asks whether to move it to this copy; it never silently rewrites or removes another copy's registration. The application runs at Idle priority with background processing mode.
+- `WIDGETS.md` describes a persistent floating widget. HypeTabs has no such widget; its cue overlay follows the applicable principles (borderless, click-through, never activating, no taskbar entry, redrawn only on state changes, dismissed rather than animated, background process priority), and the search overlay is a transient window rather than a widget, so the layout-scaling and drag/resize rules do not apply.
+
+## Reliability and accessibility
+
+- Start only one tray host per Windows user. Handle browser restarts, profile disconnects, extension updates, sleep/resume, and monitor changes without stale activation commands or duplicate records.
+- Give each activation/restoration request its own ten-second monotonic deadline. Later requests must not extend earlier deadlines or expire alongside them prematurely. Ignore responses and guidance hints after their deadline; on timeout, explain that the user should search again and check whether Chrome acted. Stop the request timer as soon as no requests remain.
+- Persist settings and retained metadata atomically, recover gracefully from corrupt state, and enforce retention on startup and during operation.
+- Support keyboard-only search and selection, screen-reader labels, high contrast, display scaling, and reduced motion. Visual arrows supplement an accessible direct activation action. The search overlay names its input, results list, and status label through the Windows accessibility property service (both MSAA and UI Automation names) and marks the status label as a polite live region so state changes are announced; controls remain standard Win32 controls whose colors follow system themes.
+
+## Delivery and acceptance
+
+Before copying installation files, validate every required build artifact and destination. Reject redirected installation directories, directory ancestors, and destination files, plus files occupying expected directories or directories occupying expected files. Refuse updates while that installation's host or bridge is running. Preserve unknown files when updating a valid installation.
+
+Per-user removal includes an installed PowerShell script. After the user exits the tray application and removes the extension from each Chrome profile, it removes known application files and matching sign-in/native messaging registrations. Saved settings and closed-tab data are removed by default; `-KeepData` retains them and `-WhatIf` previews removal. Preserve unrelated files and registry values, reject redirected installation paths, and require application-owned processes to stop before deleting their files.
+
+Removal validation includes real directory junctions at the installation root, an ancestor, App, and extension directories, plus a running production host in an isolated installation. Refusal must preserve the running executable and files behind redirected paths. Clean-account installation/removal remains a separate release check.
+
+Development extension setup uses Chrome's supported Developer mode and Load unpacked controls in each participating profile. Do not depend on the removed `--load-extension` switch in branded Chrome builds. Live setup tests must use disposable profiles and cancel synthesized keyboard input if focus leaves the test window.
+
+Automated browser tests may use Google's first-party Chrome for Testing with disposable profiles and loopback-only DevTools. Keep its download and extracted files outside application/release assets, pin the tested version and archive digest, and configure its supported sandbox permissions. Passing a test-browser check does not replace ordinary Chrome installation and interaction acceptance.
+
+Native integration tests use the production host and bridge with isolated application data. Refuse pre-existing HypeTabs registrations/processes, restrict temporary native registration to the actual test extension ID, and remove test registrations and profiles afterward. A synthetic loopback webpage may supply a safe, reproducible closed-tab restoration fixture.
+
+`OUTSTANDING.md` tracks remaining implementation work in dependency order. `docs/IMPLEMENTATION.md` records build evidence, current implementation limits, and platform findings. It supplements this specification without changing its requirements; keep both documents current as implementation progresses.
+
+First validate profile-scoped browser communication, matching browser windows to Windows windows, safe same-profile restoration, and reliable visual target discovery. Document platform limitations and use the specified fallback where precision is unavailable. Then implement the tray host, extension, search, options, guidance, and bounded persistence without third-party dependencies.
+
+The first release must demonstrate:
+
+1. Finding and opening the intended tab across multiple windows and profiles, including duplicate titles and URLs.
+2. Keyboard and mouse operation of the configurable shortcut and overlay, including shortcut conflicts and no-result states.
+3. Correct guidance or direct activation for grouped taskbar icons, minimized windows, tab groups, and scaled multiple monitors; every visible arrow disappears on the next click anywhere.
+4. Reopening a closed tab in its original profile, including a stopped profile, or clearly explaining why that profile cannot be restored without opening a different one.
+5. Correct handling of tabs moved or closed while results are visible, reconnects, and application restart.
+6. Incognito exclusion, retention expiry, clear-data behavior, malformed message rejection, and safe handling of hostile titles, URLs, and profile labels.
+7. Measured resource and latency budgets with the lowest process priority enabled, plus a dependency inventory confirming no unapproved third-party additions and no third-party application runtime dependencies.
+
+Changes to application behavior must update this file and explicitly identify any conflict with its previous requirements, as required by `AGENTS.md`.

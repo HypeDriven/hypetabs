@@ -1,0 +1,432 @@
+# Implementation evidence
+
+## Current state
+
+The repository contains a C++ Win32 tray host, in-memory search, a native messaging bridge, and a provisional TypeScript Chrome extension. Open-tab snapshots, incremental updates, pause/resume, and profile-scoped direct activation are wired together. Live Chrome for Testing checks verify initial snapshot collection, two-profile activation, and same-profile closed-tab restoration through the production native bridge. Encrypted persistence has native and synthetic-profile coverage. Tab-header discovery and cue primitives have partial live/synthetic validation, including a visible native cue at 100% scaling. Full taskbar-first guidance, broader DPI/accessibility acceptance, the WASM comparison, performance budgets, and ordinary Chrome installation/release acceptance remain outstanding. This is a development build.
+
+The tray shell implements a hidden search window, a tray context menu, configurable Ctrl/Alt hotkeys with conflict handling, atomic shortcut settings, lowest CPU priority/background mode, a process singleton, monitor-aware overlay positioning, and cleanup on Exit. Windows lifecycle smoke checks passed; complete UI/accessibility and browser acceptance checks remain outstanding. Default shortcut candidate: Ctrl+Alt+T.
+
+## Build and checks
+
+From Windows, run `tools\build.cmd`. From this WSL checkout, run:
+
+```sh
+cmd.exe /d /c '\\wsl.localhost\Ubuntu-24.04\home\albert\hypetabs\tools\build.cmd'
+```
+
+The script uses the installed Visual Studio 18 Build Tools x64 compiler (MSVC 14.50.35717), C++20, optimization, static runtime linking, and warnings as errors. No third-party packages are downloaded or linked. Windows 11 host version reported: 10.0.26200.9168.
+
+The first build and executable search checks passed on 2026-09-09. Checks cover partial/typo matching, multiple query terms, profile filtering, duplicate preservation, activity ordering, open/closed tie-breaking, empty query, and no matches. Initial executable size: approximately 148 KiB. The synthetic search workload (2,000 tabs, 100 queries) measured 0.4607 ms p95 on this host. This does not verify the full application performance budget or extension overhead.
+
+`tools\smoke.cmd` stages a temporary local Windows copy, runs an isolated shell lifecycle check, and closes/removes the instance it starts. The check passed on 2026-09-09; measured shell private bytes were 2,650,112 (about 2.5 MiB), not the specification's private-working-set metric or a fully loaded application measurement. It checks hidden startup, Idle process priority, singleton behavior, overlay toggling by a hotkey window message, and clean exit. An initial harness failure was traced to PowerShell converting a null window-title argument to an empty string; the corrected harness supplies native null inside its C# interop wrapper. It does not prove physical global hotkey delivery, accessibility, browser integration, or the performance budgets.
+
+## Platform feasibility
+
+Chrome native messaging is the intended browser transport. A service-worker caller supplies a zero native parent-window handle, so it cannot directly establish the mapping needed for taskbar arrows. Profile-scoped browser activation and supported Windows accessibility discovery remain feasibility work.
+
+Primary API reference: [Chrome native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging).
+
+## Language decision
+
+The user's C++ instruction supersedes the earlier C#/.NET desktop choice. The user also prioritizes even small steady-state CPU/memory gains over extension startup cost. Compare TypeScript-generated JavaScript and C++/WASM with its necessary JavaScript bridge before selecting the extension implementation. No measured winner exists yet; do not assume WASM improves API-bound event forwarding.
+
+## Browser transport verification
+
+Native builds and search, protocol, and browser-state regression executables pass. The Windows smoke check now connects two synthetic profile clients to the actual tray host, feeds duplicate tab IDs/titles, verifies two distinct search results, activates the selected result, and confirms that only the selected profile receives the command. Shutdown with connected clients passes. This proves the named-pipe-to-UI path, not Chrome's native messaging registration or real browser behavior.
+
+Four extension checks with mocked Chrome APIs pass: profile snapshots/incognito exclusion and activation; update/removal/pause handling; malformed command rejection; and pause/resume during an outstanding snapshot query. The last check covers a corrected stale-snapshot race. Source is stripped with Node 24's built-in TypeScript support; no compiler packages are installed, and full TypeScript type-checking remains outstanding.
+
+Current build assets are about 214 KiB for the host, 131 KiB for the bridge, and 6.2 KiB for the baseline extension worker. The loaded synthetic host measured about 3.2 MiB private bytes; this is not the full performance acceptance workload. `tools/install.ps1` provides a per-user development installation and exact-origin bridge registration; it has not yet been executed or verified against Chrome. No conflicting specification requirements were introduced.
+
+## Closed tabs and persistence
+
+The host now retains observed closures and imports Chrome-provided recent sessions. Exact individual-tab restoration is preferred; stale or ambiguous session data uses the complete HTTP(S) URL in the original connected profile. Whole-window restoration is not invoked implicitly. Unavailable profiles get an explicit reopen-profile/reconnect instruction; automatic stopped-profile launching has not been verified. Unsupported URL schemes can appear in search but are not executed by restoration.
+
+Retention options support zero through seven days, a global 1,000-entry cap, and immediate clear. Closed metadata is DPAPI-protected with a current-user file DACL, written atomically by a bounded background writer. Clear invalidates pending saves and persists a time cutoff for imported history. Oversized URLs are omitted rather than truncated into incorrect destinations.
+
+Native history tests verify retention/eviction, observed/session association, encrypted round-trip, corruption rejection, and clear-versus-save ordering. Nine mocked extension tests pass, including individual-session restoration, window-session URL fallback, unsupported-scheme rejection, private-session exclusion, clear cutoff, disabled retention, and oversized URLs. The Windows smoke check uses an isolated data directory and verifies closed-tab search, same-profile restore command routing, removal of the consumed result, encrypted history across restart, and clearing without file resurrection. An initial list-text check failed because the harness called the ANSI message API; the corrected Unicode reader passes.
+
+These checks do not prove real Chrome session behavior, profile launching, accessibility, or the full performance budgets. Long-running restoration/reconnect races and ambiguous duplicate-URL history need additional live-browser coverage. No requirement conflict or third-party dependency was introduced.
+
+## Profile options and sign-in startup
+
+Options now lists connected and retained offline profiles, provides reconnect instructions, and lets the user rename a connected profile. The extension persists the name in that profile's local storage before acknowledging it. The host updates open/staged/retained search labels without changing profile identity. Control characters and invalid names are rejected; failed storage reports an error. The extension suite now has ten passing checks, including rename persistence/failure handling; native state tests cover reindexing and invalid names.
+
+Start at sign-in uses only the current user's Windows Run value and is opt-in. The app does not register itself during startup. Disabling it does not remove a different installation's entry. Native tests verify enable/disable and ownership handling in an isolated test registry key, without modifying actual startup entries. Isolated-data smoke instances disable the real startup checkbox. See [Microsoft's Run-key documentation](https://learn.microsoft.com/en-us/windows/win32/setupapi/run-and-runonce-registry-keys).
+
+## Tab cue validation and paused actions
+
+On 2026-09-09, `tools/build-locator-probe.cmd` and `tools/probe-chrome.cmd` passed against installed Chrome using a temporary isolated profile. Windows UI Automation located the unique selected tab header while excluding a webpage ARIA tab with the same name. The probe closed its own browser and removed its temporary profile. This validates one layout, not cross-profile HWND identity, taskbar discovery, DPI variants, or end-to-end extension integration.
+
+The cue implementation draws a static arrow or outline, uses a configurable five-second default timeout, and monitors input only while active. `tools/test-cue.cmd` passed selecting-click exemption, click-through, dismissal in another test window, no focus stealing, timeout, Escape, cancellation during pending discovery, and hook cleanup. Discovery runs on a worker with bounded traversal and excludes document subtrees. Native window identity remains a release gate: a foreground Chrome window and matching title alone do not prove the intended profile.
+
+The full Visual Studio build and native search, protocol, model, encrypted history, and startup tests passed. The Windows smoke test passed synthetic two-profile activation, renaming, closed-tab restoration, restart persistence, and clearing retained data. That successful run does not close the previously recorded intermittent snapshot failure investigation. Run Windows build scripts serially because concurrent UNC `pushd` mappings can invalidate each other's build drive.
+
+The extension now permits user-requested activation and safe restoration while collection is paused, without resuming metadata collection. Thirteen mocked extension checks pass, including paused actions and guidance notifications only after successful non-private focused activation. These changes clarify and implement the existing specification; no requirement conflict or third-party dependency was introduced. Taskbar-first guidance, reliable native window identity, broader accessibility coverage, live native messaging, and WASM comparison remain outstanding.
+
+## URL normalization performance
+
+On 2026-09-09, URL collection was changed to reject lengths above 8,192 UTF-16 code units immediately and accept well-formed lengths at most 2,730 without allocating a UTF-8 buffer. UTF-8 uses at least one byte and at most three bytes per UTF-16 code unit after lone-surrogate replacement; intermediate lengths still receive the exact byte check. Recent-session import now normalizes each URL once instead of twice. Fourteen extension tests pass, including exact byte boundaries, supplementary characters, lone surrogates, and deterministic randomized Unicode against the previous encoder-based behavior.
+
+`node tools/benchmark-url.mjs` compares the built function with the previous implementation, using three warmups and nine alternating-order trials. On Node v24.20.0, Linux x64 under WSL, typical synthetic URLs measured baseline median 931.8 ns (range 811.4–979.1) versus optimized 21.0 ns (17.8–24.8). Boundary inputs measured 10,007.2 ns (8,628.5–10,882.5) versus 6,748.5 ns (5,960.0–8,003.2). These are isolated function timings, not Chrome, transport, total memory, or application acceptance results. No WASM winner has been established. No compiler was found on the Linux PATH or in the checked standard Windows LLVM locations; toolchain discovery remains incomplete. No dependency or specification conflict was introduced.
+
+## Host paused activation and keyboard navigation
+
+The earlier paused-action fix covered the extension only; inspection found a separate host-side restriction still blocking result activation. That restriction is now removed. On 2026-09-09 the Windows smoke test paused both synthetic profiles, activated the selected result through the search input, verified routing to the correct profile, and resumed collection successfully. This is host/transport evidence in addition to the extension tests, not live Chrome acceptance.
+
+Home, End, Page Up, and Page Down now navigate the focused result list without triggering its activation notification. The search input retains normal Home/End editing. The rebuilt native tests and Windows smoke checks passed; the latter verifies that all four navigation keys leave the overlay visible and Home selects the first result before Enter. The specification records this keyboard behavior. These fixes implement existing intent without conflicting requirements or added dependencies. Eight-result layout and broader DPI/accessibility verification remain outstanding.
+
+## Compact search layout
+
+On 2026-09-09 the search window changed from a fixed 410-pixel logical height to a client area calculated for eight actual list rows. It retains all matches for scrolling. Initial placement moves the hidden window to the foreground monitor before reading its DPI; fonts are recreated on DPI changes and controls use scaled spacing. The frame size uses [AdjustWindowRectExForDpi](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-adjustwindowrectexfordpi), and fonts use [SystemParametersInfoForDpi](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfofordpi). The overlay is clamped to the monitor work area.
+
+The native build/tests and Windows smoke test pass. The smoke test now measures list client height against item height to verify eight visible rows on the test display, alongside existing navigation, paused activation, restoration, options, and persistence checks. This supersedes the eight-result sizing limitation above; mixed-DPI monitor moves, small work areas, visual readability, and complete accessibility remain unverified. The specification clarifies initial sizing versus manual resizing; no conflicting requirement or dependency was introduced.
+
+## Keyboard focus, scrolling, and explicit activation
+
+Tab now cycles between the input and list (with two controls, Shift+Tab has the same destination). List selection notifications no longer activate tabs. A list subclass activates only after a completed left click within the selected row; Enter remains the keyboard activation action. This also prevents native list type-to-select from opening a result accidentally.
+
+On 2026-09-09 the native build/tests passed. The expanded Windows smoke test verifies focus in both directions, twelve searchable results in the eight-row viewport, End revealing the last result, selection notification without activation, and mouse activation through the correct profile. The complete run also passed paused activation, options, restoration, persistence, and clear-data checks. These tests post Windows messages; physical input and screen-reader acceptance remain outstanding.
+
+An earlier run passed the new UI checks but stalled after restarting into the clear-data phase. The test app's windows responded to bounded WM_NULL probes and no modal dialog was found. Its exact isolated process was sent Exit and verified gone; the harness ended with code 116. The precise cause remains unresolved. Clear-data testing now posts the command asynchronously and waits at most three seconds for file deletion; the next complete run passed. This avoids that synchronous command wait but does not prove the underlying stall cannot recur. No requirement conflict or dependency was introduced.
+
+## Per-user removal
+
+`tools/install.ps1` now includes `uninstall.ps1` and `uninstall-core.ps1` in the installed application directory. Removal requires exiting HypeTabs and removing the extension from each Chrome profile first. It removes known application files and exact matching startup/native-host values, preserves unknown files and unrelated registry values, and refuses directory redirection. Saved data is removed by default; `-KeepData` preserves it and `-WhatIf` performs no mutation. No separate runtime is bundled; scripts use Windows PowerShell and Windows-provided registry APIs.
+
+On 2026-09-09 `tools/test-uninstall.cmd` passed against synthetic temporary files and isolated HKCU test keys. Cases cover owned registrations, another installation's registrations, retained data, preview mode, unknown files/values, and repeated removal. The first test identified read-only registry access for the default native-host value; removal now explicitly opens that key writable. Real installation state was not modified. Running-process refusal, redirected-directory rejection, and clean-account install/uninstall acceptance still require dedicated validation. The specification and README now describe the removal workflow; no conflicting requirement or third-party dependency was introduced.
+
+## Live Chrome setup probe
+
+`tools/probe-extension-ui.ps1` creates a disposable Chrome profile, uses Windows UI Automation to navigate to Extensions, and attempts to load the built extension through the folder picker. It verifies the foreground test window before synthesizing Enter and closes its own browser in cleanup. It never changes native messaging registration. The probe assumes English control labels and is not yet a passing end-to-end setup test.
+
+On 2026-09-09, a bounded probe successfully reached the Extensions page, toggled Developer mode using its TogglePattern, and found Load unpacked. Initial command-line navigation showed a New Tab instead; explicit address-control navigation worked. A subsequent load attempt did not discover the expected owned folder picker. Another attempt cancelled before keyboard input when focus left the test window. Extension installation and live native messaging remain unverified; these outcomes do not satisfy those gates.
+
+Branded Chrome removed `--load-extension` starting in version 137; use the [supported Extensions-page setup route](https://groups.google.com/a/chromium.org/g/chromium-extensions/c/1-g8EFx2BBY/m/S0ET5wPjCAAJ). The specification records that route. No third-party dependency or conflicting requirement was introduced.
+
+The UI probe subsequently found the owned folder picker and identified its native controls. Its editable path was not available through the managed accessibility lookup, and attempts through the address shortcut and visible native edit validation did not complete directory selection. That script remains experimental; normal branded-Chrome loading is unverified.
+
+On 2026-09-09, `tools/probe-extension-cft.ps1` passed using Google Chrome for Testing 153.0.8010.36: the actual built service worker loaded in a disposable headless profile and returned its HypeTabs name, version, and extension ID through `chrome.runtime` in a DevTools evaluation. This is live Chrome execution, not a mocked API. No native messaging registration changed. Tab collection, activation, restoration, and multi-profile native integration remain unverified end to end.
+
+`tools/prepare-chrome-test.ps1` pins the archive from [Google's published download metadata](https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json). The executable reports NotSigned; an initial signature requirement was incorrect for this artifact. Provenance is the official HTTPS download with a recorded reproducibility digest, not a publisher signature. Browser files remain in Windows temporary storage for subsequent testing and are not bundled with HypeTabs.
+
+An initial sandbox access error required Google's `setup.exe --configure-browser-in-directory` step. Its exit code 78 is [CONFIGURE_APP_CONTAINER_SANDBOX_SUCCESS](https://raw.githubusercontent.com/chromium/chromium/main/chrome/installer/util/util_constants.h); preparation now recognizes it. The browser sandbox stays enabled. The DevTools harness was also corrected to ignore unsolicited worker-loaded events until the correlated evaluation response arrives. No third-party dependency or conflicting product requirement was introduced.
+
+The Windows Options smoke check passed for two connected profiles, scoped rename commands, acknowledged labels, and closing Options without ending the tray application. Its initial rename failure was a harness issue: cross-process edit text must use the Unicode control message. An intermittent zero-result snapshot assertion has also occurred and remains a reliability investigation; the latest full run passed. Actual sign-in execution and real Chrome label persistence still need live verification. Native builds now specify UTF-8 source encoding explicitly.
+
+Guidance preference controls exist; complete visual behavior remains outstanding. No specification conflict or third-party dependency was introduced.
+
+## Live native integration across two profiles
+
+On 2026-09-09, `tools/probe-extension-cft.ps1 -Native` passed with the actual built C++ tray host, production native messaging bridge, and built extension in two headless Chrome for Testing profiles. The test registers only the actual temporary extension origin and refuses existing HypeTabs registration or processes. Application data and browser profiles are isolated under the test directory.
+
+Verified: a newly created Chrome tab is indexed into the native search UI; Enter activates that actual tab; two separate profiles retain identical titles as two results; profile filtering routes activation to the second browser; a synthetic HTTP tab served on loopback becomes one closed result after actual Chrome closure; selecting it reopens exactly one active tab in its original profile and none in the other; the native result becomes open without a duplicate retained closure. The test uses real Chrome APIs and production transport, not mock frames. Profile labels are fixture setup through the extension's existing handlers, not evidence of the full Options rename workflow.
+
+Cleanup completed, and a separate Windows check found neither test native registration nor the ExtensionOrigin key and no HypeTabs/bridge processes. The native-registration key is the Windows path documented in [Chrome's native messaging reference](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging). No sign-in registration or existing browser profile was modified.
+
+Headless tests prove tab activation state, not physical window focus or arrow placement. Ordinary Chrome installation, initial-snapshot-specific assertions, session-versus-URL restoration branches, stopped-profile launching, reliability races, accessibility/DPI acceptance, and measured resource/WASM comparison remain outstanding. No product requirement conflict or third-party dependency was introduced.
+
+## Verified window bounds and live tab cue
+
+On 2026-09-09, `tools/test-window-identity.cmd` passed unique-window selection, ambiguous overlapping bounds, moved/hidden windows, invalid dimensions, and preservation of foreground focus. The host accepts bounded geometry from the extension's correlated `located` message, requires all monitors at 100% scaling, rejects ambiguous Chromium-class candidates, and verifies Chrome process identity and foreground status. Unsupported geometry retains direct activation. SHCore is an additional Windows SDK library, not a third-party dependency.
+
+`tools/probe-extension-cft.ps1 -Native -WindowBounds` passed with the first test browser visible: Chrome-reported bounds and Windows physical bounds both measured 120,140,900,600 at DPI 96. Selecting its real tab through native search produced a visible native cue. The run also passed duplicate-title routing across two profiles and same-profile closed-tab restoration without a retained duplicate. This verifies cue presence for one layout, not its visual readability, all scales, or the full taskbar-first flow.
+
+An initial combined run failed the second-profile label filter. The harness injected its label before explicitly waiting for the asynchronous native collection handshake; it now waits for that handshake and gives the host a bounded wait to apply the label. The next run passed. A subsequent extended run also passed an initial-snapshot assertion: a tab fully loaded before native registration and host startup appeared in search. Fourteen mocked extension tests still pass. These results supersede the corresponding initial-snapshot and live-cue evidence gaps above; ordinary Chrome setup, broader layouts, and the other release gates remain open. No product requirement conflict was introduced.
+
+## Native search scoring optimization
+
+On 2026-09-09, search stopped checking token matches once a stronger title match or exact token match determines the score. Prefix and typo checks are also skipped when they cannot improve the current score. This preserves matching semantics and stable ordering while avoiding repeated string work on every query.
+
+`tools/benchmark-search.cmd` compares the production search against the previous scorer on 1,000 open and 1,000 closed synthetic records distributed over five profiles and ten windows. Twelve queries cover empty, partial, typo, profile, multi-term, and absent matches. Full result ordering matches the baseline; 10,000 deterministic randomized score comparisons also pass. The benchmark requires Windows idle priority and background mode, warms both paths three times, and alternates their order over nine measured trials of 2,400 queries each.
+
+Reference host: AMD Ryzen 9 9950X3D, 16 cores/32 logical processors, Windows 11 (previously recorded build 26200.9168), MSVC 14.50 x64 `/O2 /MT`. Measurements are medians and ranges of per-trial averages, not individual-query percentiles:
+
+| Metric per query | Previous scorer | Optimized scorer |
+| --- | --- | --- |
+| Elapsed milliseconds | 0.182794 (0.181201–0.188484) | 0.163402 (0.161287–0.168299) |
+| Thread CPU cycles | 783,227 (776,323–807,698) | 698,721 (691,327–720,807) |
+
+Median cycles decreased approximately 10.8%; median elapsed time decreased approximately 10.6%. An earlier shorter run had overlapping timing ranges, prompting larger batches and CPU-cycle measurement. These are native in-memory search measurements; they do not establish UI latency, host idle CPU/private working set, Chrome overhead, or a WASM advantage. The rebuilt tray host and all native regression executables passed. The specification records the optimization policy; no conflicting behavior or third-party dependency was introduced.
+
+## Incremental index reuse
+
+On 2026-09-09, `IndexedTab::update` began retaining folded search text and tokens when title, URL, and profile label are unchanged. Activity/window/connection changes still update the tab metadata. Exact duplicate updates and removal of absent tabs now report no model change, avoiding unnecessary visible results refreshes. Browser-state tests verify duplicate suppression, absent removals, activity/window updates, and removal of obsolete search terms after navigation.
+
+`tools/benchmark-index.cmd` compares the previous unconditional reconstruction with this path on 1,000 open records, five profiles, and ten windows. Each trial applies 100,000 updates: 20% duplicates, 70% activity/window changes, and 10% navigation. Both paths produce identical final metadata, folded text, and token vectors. Three warmups precede nine alternating-order trials, at Windows idle/background priority on the reference machine above.
+
+| Per-update trial average | Previous rebuilding | Incremental reuse |
+| --- | --- | --- |
+| Elapsed milliseconds, median (range) | 0.00274287 (0.00220991–0.00290391) | 0.000474801 (0.000434307–0.000510854) |
+| Thread CPU cycles, median (range) | 11,608.4 (9,346.32–12,080.1) | 1,981.34 (1,837.56–2,149.09) |
+
+Median CPU cycles decreased about 82.9% for this synthetic update mix. This measures index maintenance, not parsing, IPC, Chrome event forwarding, or total application CPU. The full Visual Studio build/native regressions passed. The rebuilt host also passed the live two-profile Chrome for Testing flow: initial snapshot, activation, visible cue, and same-profile restoration without a retained duplicate. No conflicting specification behavior or third-party dependency was introduced.
+
+## Foreground-failure recovery
+
+The host now distinguishes Chrome's `focus` response from an unavailable tab. Its quiet notification explains that the tab was selected but its window stayed behind. Clicking a failure notification reopens search for explicit retry; clicking again while search is visible focuses it rather than dismissing it. Search also explains that the user can open Chrome from the taskbar. The handler uses the documented [NIN_BALLOONUSERCLICK callback](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar). It does not force foreground access or automatically repeat restoration.
+
+On 2026-09-09 the Visual Studio build/native regressions passed. Windows smoke checks passed a synthetic `focus` reply, notification callbacks with hidden and visible search, and a fresh explicit retry routed to the original profile. This verifies the callback and retry path; physical notification interaction and recovery under actual Windows foreground restrictions still need acceptance testing.
+
+The smoke test initially reported six visible rows at DPI 120. Diagnostics showed a virtualized 128-pixel list rectangle being compared with a physical 20-pixel row height. Its rectangle query now temporarily uses per-monitor DPI awareness and restores the previous thread context. The eight-row assertion then passed, followed by notification recovery and the other UI checks. The product layout was unchanged. No specification conflict or third-party dependency was introduced.
+
+That run later stalled during the existing restart/persistence phase. All three windows belonging to its exact isolated process answered bounded WM_NULL probes; the process was sent Exit and verified stopped, after which the harness ended with code 116. The cause remains unresolved. Numeric synchronous test messages now use a two-second `SendMessageTimeoutW` limit, and restart checkpoints identify progress. The next full smoke run passed, including encrypted persistence across restart and Clear saved data without resurrection. This successful run does not close the intermittent-stall investigation.
+
+## Uninstall refusal checks
+
+On 2026-09-09, `tools/test-uninstall.cmd` passed expanded refusal checks using real Windows directory junctions at the installation root, an ancestor, App, and extension directories. The synthetic target's sentinel file stayed unchanged. Drive-root deletion and non-HKCU registry paths were also refused. Links were explicitly removed before recursive test cleanup.
+
+The test then launched a disposable copy of the production tray executable with isolated application data. Removal refused while that exact installation was running, and its process and executable remained intact. Cleanup stopped only the process created by the test. Existing HypeTabs processes cause this scenario to refuse setup rather than interfere with them. Earlier ownership, data-retention, unknown-file, repeated-removal, and preview cases also passed. Running-bridge-specific coverage and a clean Windows account's install/uninstall acceptance remain outstanding. The specification records the validation scope; no conflicting behavior or dependency was introduced.
+
+## Unicode title and profile search
+
+Search previously used C-locale `towlower`/`iswalnum`, which could discard Japanese query characters and treat the query as empty. The native index now uses direct ASCII checks and Windows invariant lowercase mapping for non-ASCII strings. Windows character classification retains non-Latin letters/digits and combining marks; UTF-16 surrogate pairs remain searchable rather than being discarded. Diacritics stay significant. The implementation uses [LCMapStringEx](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-lcmapstringex) and [GetStringTypeW](https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-getstringtypew), supplied by Windows.
+
+On 2026-09-09 native regression checks passed accented Latin, Cyrillic, Japanese, combined profile/title, absent Japanese terms, combining marks, and supplementary characters. The production host passed `tools/probe-extension-cft.ps1 -Native` with a real Chrome title containing ÉCOLE and 東京. Tests query mixed terms, Japanese alone, and a different Japanese term that must return no matches. Two-profile routing and closed-tab restoration also pass. This verifies the browser-to-native Unicode path; it does not claim complete linguistic normalization or transliteration. The specification clarifies the intended search behavior without conflicting with existing requirements, and no third-party dependency was added.
+
+## Installation preflight
+
+The installer now calls `Install-HypeTabsFiles` before registration. It validates all required sources and expected destination types, rejects redirected installation paths and ancestors, refuses updates to a running installation, and copies the known application and removal files. Directory/file validation is shared with removal in `uninstall-core.ps1`; the installed uninstaller remains self-contained with that file.
+
+On 2026-09-09, `tools/test-install.cmd` passed in temporary directories with synthetic source artifacts: exact copy contents, removal-script hashes, repeated updates preserving unknown files, junctions at root/ancestor/App/extension, a directory occupying worker.js, a file occupying App, and a missing source artifact. Refusal happened before destination files were written; junction targets remained unchanged. The complete uninstall suite also passed after the shared validation change, including its running-host refusal. No normal installation or native registration was changed by these tests. Clean-account installation and registration acceptance remain outstanding. The specification adds the preflight behavior without conflicting requirements or third-party dependencies.
+
+## Independent browser request deadlines
+
+The old request timer restarted for every new command and cleared all outstanding requests together. Requests now carry individual ten-second `GetTickCount64` deadlines. The timer targets the earliest deadline and expires only due entries, preserving newer requests. Replies and guidance hints are rejected after their deadline even when timer delivery is delayed. Completion of the final request and Clear saved data stop the timer immediately. A timeout cancels its matching cue and offers search recovery without automatically repeating a possibly completed restoration.
+
+On 2026-09-09 the Visual Studio build and native regressions passed. Deadline tests cover empty queues, later arrivals not extending earlier deadlines, no premature expiration, exact-deadline expiration, preservation of later requests, and no remaining timer requirement after the final response. The full Windows smoke test also passed after an early WM_TIMER was injected between a restoration command and its successful response: the closed record was still consumed correctly. This verifies model scheduling and the host's early-callback integration; sustained delayed-response/foreground acceptance remains outstanding. Specification and protocol documentation now describe deadlines; no conflicting requirement or third-party dependency was introduced.
+
+## Loaded host resource measurement
+
+On 2026-09-09, `tools/measure-host.ps1` completed with 1,000 open and 1,000 retained closed records through five synthetic connections to the production named-pipe host, representing ten window IDs. The reference machine is the Ryzen 9 9950X3D Windows 11 host described above. The executable build SHA256 was `cea086e5fb4a2dfbd5860a7950ffe796d894f7c8fae830069fd33385169ee573`. The host remained at Idle priority; isolated test data and the temporary executable were removed afterward.
+
+| Measurement | Observed result |
+| --- | --- |
+| Hidden-overlay idle interval | 300.084 seconds |
+| Process CPU-time increase | 0 seconds reported by the counter |
+| Private working set before/after idle | 7,376,896 / 7,352,320 bytes (about 7 MiB) |
+| Hotkey-message to overlay-visible p95 | 66.803 ms |
+| Query-message to verified result-count p95 | 39.500 ms |
+
+Zero reported CPU increase means no measurable change at the counter's resolution, not proof that the process executed no instructions. CPU percentage is computed against one logical processor, without dividing by the machine's processor count. Memory uses the Windows `WorkingSetPrivate` performance counter, which is distinct from committed private bytes ([Microsoft's counter mapping](https://learn.microsoft.com/en-us/windows/win32/memory/memory-performance-information)); before/after samples do not establish a peak.
+
+Latency measurements use 100 trials after five warmups. Each repeats the fixed query `documentation travel` and verifies 400 results, then closes/reopens the overlay using window messages. These measurements are within the corresponding numeric ceilings for this synthetic host path, but exclude Chrome/bridge overhead, physical hotkey delivery, completed rendering, varied typing workloads, and explicit CPU contention. They do not complete application-wide performance acceptance. The initial fixture used a numeric profile query that also matched URL digits; distinct profile labels corrected the test's expected result count before the recorded run. Reports are written to ignored `build/host-measurement.json`; subsequent runs also record the copied executable hash and bound the performance-counter request timeout.
+
+Current copied release files total 452,594 bytes (0.432 MiB), before the generated native-host registration manifest: host 299,520; bridge 133,632; extension manifest 417; worker 13,269; removal wrapper 522; removal core 5,234. The C++ runtime is statically linked into the binaries. A complete installed-footprint and fresh-install acceptance check remains separate. No specification conflict or third-party dependency was introduced.
+
+## Reusing unchanged result rows
+
+The search UI now compares complete row text and ordered tab identities before clearing/repopulating its native list. When they match, it retains the list and scroll position. Current model indexes still update, and selection changes when necessary. Changes to title, URL, label, window, status, or displayed closure age rebuild the rows. If the native list cannot allocate an item, it clears partial results rather than allowing row/tab identities to diverge. Caching retains an additional copy of displayed row text.
+
+On 2026-09-09, the full native build and Windows smoke test passed, including a new unchanged-refresh check preserving a deliberately scrolled viewport and selected tab. Existing profile routing, notifications, renaming, restoration, restart persistence, and clear-data checks also passed.
+
+`measure-host.ps1 -LatencyOnly` now supports saved executables and optional varied queries without repeating five-minute idle sampling. Comparison builds: previous `cea086e5fb4a2dfbd5860a7950ffe796d894f7c8fae830069fd33385169ee573`; new `6893e5acdfc36318e9321a6cf23f339756b136a39c9bd51905feacfa080b99b6`. Each run verified the 2,000-record workload at Idle priority and measured 100 trials after five warmups:
+
+| Window-message p95, milliseconds | Previous | Reused rows |
+| --- | --- | --- |
+| Repeated 400-result query | 35.093 | 4.040 |
+| Overlay reopen with those results | 59.635 | 6.023 |
+| Alternating 400/200/zero-result queries | 33.705 | 34.408 |
+| Overlay reopen during alternating queries | 34.637 | 27.708 |
+
+The benefit is concentrated in unchanged results and reopen operations; this comparison does not show faster queries that change the rows. Sampled private working sets across these runs ranged from 6,311,936 to 7,397,376 bytes; endpoint samples do not isolate the cache's memory cost or establish peak use. These are individual run distributions on the same host, not a full repeated-trial variability study or physical-input/rendering acceptance. Raw comparison reports remain under ignored `build/host-latency-*-row-cache-*.json`. No specification conflict or dependency was introduced.
+
+## First C++/WASM normalization experiment
+
+After local compiler searches found no usable WASM toolchain, the user approved WASI SDK 27 for temporary experimental tooling. The official release archive digest was verified before extraction; its location and provenance are in `docs/DEPENDENCIES.md`. This is an approved build-tool exception to the previous dependency policy. The normal application build and extension payload still have no third-party runtime dependencies.
+
+`extension/wasm/url.cpp` implements the existing UTF-8 size limit from UTF-16 input, including replacement of isolated surrogates. `tools/test-wasm-url-native.cmd` passed boundaries, paired/isolated surrogates, and 1,000 randomized comparisons with Windows UTF-8 encoding. `tools/build-wasm-experiment.mjs` compiled it with no runtime libraries to a 628-byte WASM module, with no imports and a fixed 65,536-byte memory. Node tests independently verified 1,000 randomized inputs and boundary cases against TextEncoder.
+
+On 2026-09-09, `tools/benchmark-wasm-url.mjs` ran three warmups and nine alternating-order trials under Node 24.20.0, Linux x64/WSL. Measurements include JavaScript string-to-WASM UTF-16 copying and conversion back to a well-formed JavaScript string. Values below are median nanoseconds per URL with observed trial ranges:
+
+| Workload | Current JavaScript | WASM candidate with bridge |
+| --- | --- | --- |
+| Typical URLs | 19.80 (18.25–30.01) | 22.02 (17.78–28.47) |
+| Boundary URLs | 5,486.36 (4,660.73–6,676.68) | 7,230.28 (5,508.12–8,070.71) |
+
+Both candidates retain the proven short-string fast path, so typical URLs bypass the WASM call entirely. Those timings overlap and do not show a WASM gain. The boundary median was slower with the bridge in this run; its range also overlaps JavaScript. This preliminary result is not a complete Chrome extension comparison: browser APIs, event serialization/transport, JIT memory, multiple workers, and lifecycle costs remain unmeasured. The experiment remains outside production packaging; no implementation winner is declared.
+
+## Chrome worker WASM kernel comparison
+
+On 2026-09-09, `tools/probe-extension-cft.ps1 -WasmBenchmark` passed in isolated Chrome for Testing 153.0.8010.36 on the Windows host. It appends `benchmark-wasm-worker.js` only to the disposable copy of the built worker, calls that worker's actual `urlForStorage`, and fetches the packaged 628-byte WASM module. The test manifest alone enables `wasm-unsafe-eval`, as required by [Chrome's extension content security policy](https://developer.chrome.com/docs/extensions/reference/manifest/content-security-policy). No native registration is required or changed. Normal extension packaging remains unchanged.
+
+The worker verified 1,000 randomized UTF-16 inputs and explicit size/surrogate boundaries against TextEncoder, then ran three warmups and nine alternating-order trials. Median nanoseconds per URL and observed trial ranges:
+
+| Workload | Current JavaScript | WASM candidate with copying |
+| --- | --- | --- |
+| Typical URLs | 20.00 (16.00–28.00) | 18.50 (16.50–21.50) |
+| Boundary URLs | 6,833.33 (6,050.00–7,833.33) | 7,516.67 (5,500.00–9,216.67) |
+
+Typical URLs bypass WASM in both paths; that overlapping timing difference cannot demonstrate a WASM benefit. Boundary timings also overlap, with a slower candidate median. The module uses 65,536 bytes of linear memory; this is not a measurement of total engine or worker memory. The attached DevTools session, headless browser, synthetic workload, and timer resolution limit the inference. Event forwarding, native transport, multiple profiles, and unattached worker lifecycle remain outside this measurement. The report is saved under ignored `build/wasm-chrome-benchmark.json`. No production language winner is declared. SPEC.md now explicitly keeps experimental WASM assets and policy out of production pending complete-path evidence; this clarifies the existing benchmark gate without conflicting with it.
+
+## Persistent reduced-motion cue preference
+
+On 2026-09-09, Options gained “Use outline cues (reduced motion).” It saves in version 4 of the existing 24-byte settings record, using a formerly reserved byte. Versions 2 and 3 and the legacy shortcut record remain readable; the explicit preference defaults off for older records. Cue display receives the preference and also queries Windows' [client-area animation policy](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfow) on demand. Disabled animations or an explicit preference select a static outline around the tab instead of an arrow above it. Both styles remain static, click-through, nonactivating, and subject to existing dismissal/timeout rules. No periodic policy polling is added.
+
+The Visual Studio build and native regressions passed. Cue tests verified exact outline geometry, unchanged foreground, and hook cleanup alongside existing selecting-click, click-through, outside-click, Escape, cancellation, and timeout checks. The complete Windows smoke flow passed, including saving the option through Options and finding it checked after process restart. Tests did not change the user's Windows animation preference; live policy changes and exhaustive legacy-settings migration remain unverified. The specification now defines the preference's behavior without conflicting with existing requirements. No dependency was added.
+
+## Options DPI layout and constrained work areas
+
+On 2026-09-09, Options replaced fixed pixel placement with retained 96-DPI control coordinates and DPI-specific Windows message fonts. `native/options_layout.hpp` reapplies those original coordinates during DPI changes, avoiding accumulated rounding. The window fits within the destination monitor's work area. Native horizontal and vertical scrollbars keep settings reachable when content exceeds the viewport; dialog keyboard navigation reveals the focused control. Combo boxes retain their requested dropdown heights. Layout and font work happens on creation, display-scale changes, resizing, scrolling, or focus navigation rather than a polling timer.
+
+The Visual Studio build and native regressions passed. `tools/test-options-layout.cmd` passed geometry and font checks at 96, 120, 192, 144, and back to 96 DPI, as well as constrained-height focus reveal in both directions and actual monitor work-area fitting. These are explicit DPI inputs to real Win32 controls; they do not establish physical dragging between differently scaled monitors or visual/screen-reader acceptance.
+
+The first full smoke run failed its existing search Tab-focus check before Options opened. That check posted a key and allowed a fixed 100 ms for the Idle-priority process. Both Tab-direction checks now wait up to two seconds for the expected focus without resending the key. The subsequent complete smoke run passed, including Options profile renaming, save/close behavior, reduced-motion persistence, and protected-history restart/clear behavior. This does not prove the cause of the first focus failure or close the separate earlier intermittent-stall investigation. SPEC.md now describes DPI scaling, bounded window placement, scrolling, and focus reveal; these fulfill existing accessibility requirements without adding a dependency or conflicting behavior.
+
+## Taskbar association feasibility probe
+
+On 2026-09-09, `tools/probe-taskbar.cmd` compiled with Visual Studio `/W4 /WX` and ran against an isolated ordinary Chrome 151.0.7922.170 profile. Before inspecting taskbars, the probe verified that the exact owned Chrome window's title contained the synthetic fixture marker. It traversed only Explorer-owned primary/secondary taskbar control trees, with 250 ms UI Automation connection/transaction limits, a five-second traversal deadline, and at most 512 visited elements. It did not invoke taskbar controls, open previews, log real window titles, or alter Chrome profiles other than the disposable fixture. Cleanup closed that fixture and restored prior focus.
+
+The complete traversal visited 65 elements under three taskbars. Six visible buttons had names containing Chrome, but none exposed the target HWND through NativeWindowHandle and none contained the fixture title. Button rectangles were available. This demonstrates accessible button geometry on this layout, but not a unique association between a button and the requested browser window. It is not evidence that association is impossible: preview elements, grouping variations, and other supported relationships remain unexplored. In particular, an automation ID must not be treated as a documented HWND encoding; Microsoft's [AutomationId guidance](https://learn.microsoft.com/en-us/uwp/api/windows.ui.xaml.automation.automationproperties.automationid) cautions that other applications' IDs need not remain stable between releases.
+
+The probe is separate from application packaging and makes no production guidance change. SPEC.md now records the observed limitation and requires independent window association before showing a taskbar cue. This preserves the existing safety and fallback requirements without shrinking the taskbar-first objective or adding a dependency.
+
+## Taskbar AppUserModelID association
+
+On 2026-09-09, the taskbar probe was extended to query the exact fixture window's explicit `PKEY_AppUserModel_ID` through the Windows shell property store. The property is a supported Windows mechanism for [taskbar grouping](https://learn.microsoft.com/en-us/windows/win32/properties/props-system-appusermodel-id). The fixture had a nonempty ID matching the observed Explorer AutomationId value (either the exact ID or `Appid: ` followed by it) on one button per monitor, distinguishing it from the other Chrome-labelled buttons. Actual IDs and titles are not logged.
+
+The new experimental `native/taskbar_locator.hpp` requires a verified Chrome target, counts visible windows with the same explicit identity, rejects an ambiguous group, and searches only Explorer-owned taskbars on the target's monitor. It requires one visible matching button with valid bounds contained inside the taskbar. Traversal is bounded to 512 windows/elements and a 1,500 ms deadline, with 250 ms UI Automation connection/transaction limits and cancellation checks. Provider identity syntax remains empirical; an unknown format deliberately yields no target. The helper runs only in the probe at present and must be invoked off the UI thread when integrated.
+
+`tools/probe-taskbar.cmd` passed with ordinary Chrome 151.0.7922.170: the conservative locator found the isolated target's taskbar button, rejected it after the test created a second visible window with the same app identity, and returned no target when cancellation was already requested. The synthetic duplicate's property was cleared and the window destroyed; the Chrome fixture was closed and prior focus restored. No normal browser profile or taskbar configuration was modified. The test links Windows Shell32 and Propsys libraries, adding no third-party dependency.
+
+This supersedes the earlier inability to associate generic button names or native-handle properties, but does not complete taskbar guidance. Snapshot group counting can race window changes; association and geometry need revalidation and cancellation while cues are active. Grouped-window previews, the prepare-before-focus protocol, click transitions, and multi-monitor production acceptance remain outstanding. SPEC.md records the experimental scope without treating the prototype as completed user behavior.
+
+## Browser preparation without foreground activation
+
+On 2026-09-09 the extension gained a `prepare` command using the same bounded request/tab identifiers as activation. It explicitly requires a non-incognito tab, selects it, obtains its current window bounds, and reads the tab again before emitting `prepared`. The last check requires a still-active non-private tab in the same window. Preparation never requests window focus. Missing/invalid geometry or a changed target returns a fixed unavailable result; disconnect suppresses replies. Successful preparation produces a single bounded response. The native protocol parser accepts and validates that response, but production search does not issue or act on preparation yet.
+
+All 16 extension tests passed, including preparation, moved/inactive/private targets, invalid bounds, and disconnect behavior. The test browser now returns tab snapshots and applies activation updates, matching Chrome's snapshot semantics rather than sharing mutable map objects. The Visual Studio build and native regressions passed, including rejection of prepared responses missing bounds or carrying invalid dimensions.
+
+`tools/probe-extension-cft.ps1 -Native -PrepareProbe` passed in Chrome for Testing 153.0.8010.36. It created a disposable second window and an inactive tab, focused the original window, invoked the actual worker command, and verified that the tab became active, the second window stayed unfocused, a prepared response was sent, and the connection remained available. The complete existing Unicode snapshot, native activation, two-profile routing, and original-profile restoration checks subsequently passed. The probe restores its temporary send observer and removes its test window in a finally block. This establishes Chrome-reported focus behavior in the isolated headless harness; physical taskbar transitions and production host integration remain outstanding. SPEC.md and protocol documentation describe the new prerequisite without claiming the full guidance flow is complete. No dependency was added.
+
+## Taskbar cue click transitions
+
+The native cue component now exposes a taskbar stage and a generation-checked continuation notification. Mouse-down hides the visible cue immediately. Only a left-button press inside the identified button whose hit-test root is the expected taskbar, followed by release inside that button and the intended window becoming foreground, permits continuation. Foreground can arrive before or after release; neither condition alone suffices. Pending continuation retains the existing click/Escape cancellation hooks and timeout, so a delayed host callback cannot revive guidance after another interaction. Outside clicks, release outside, Escape, and timeout cancel and release monitoring. No click is intercepted or synthesized by production code.
+
+On 2026-09-09, `tools/test-cue.cmd` passed controlled input tests using two owned native windows as the taskbar and destination. Tests cover hiding before release, one continuation after target foreground, generation invalidation on a later click, outside clicks, release outside, Escape, and timeout cleanup alongside existing tab-cue behavior. An initial run missed its fixed 60 ms foreground-notification assertion; the diagnostic rerun passed. The test now waits up to two seconds for the asynchronous notification, while still requiring the cue to remain hidden and cancellation monitoring active. The final expanded test run passed. This timing observation does not establish a broader latency result.
+
+The host does not call the new taskbar-stage method yet. Preparation correlation, asynchronous locator work, geometry/group revalidation, and actual Explorer click acceptance remain necessary before the requested user flow is complete. SPEC.md describes the component contract and this validation limit; no conflicting behavior or dependency was introduced.
+
+## Host integration of taskbar-first guidance
+
+The host now connects browser preparation, `TaskbarWorker`, and the taskbar cue continuation. Guided open-tab selections use preparation when the desktop satisfies the existing 100% scale policy. Replies require the original connection, a still-pending preparation request, its deadline, and the current uncancelled cue generation. The worker performs native browser-window association and taskbar lookup off the UI thread; the host rechecks browser identity before displaying the cue. Release over the identified taskbar button and foreground activation of the intended window trigger a fresh correlated activation, followed by the existing tab-header lookup. Failed preparation, unmatchable geometry, unavailable taskbar association, or an already-foreground target use direct activation. Cancellation never retries a restoration.
+
+Disconnects and malformed-client teardown now remove matching outstanding requests and cancel their guidance. Clear saved data also cancels the separate guidance state. The taskbar cue cancels on taskbar-descendant geometry changes and newly shown windows (except its expected target appearing during the activation click), reducing stale-group/position exposure. Full race acceptance remains unproven. Propsys is now linked into the tray executable; it is a Windows SDK library, not an external dependency. Worker threads remain within the host's Idle/background-priority process.
+
+On 2026-09-09, the Visual Studio build, native regressions, and expanded cue interaction tests passed. The initial smoke harness expected an immediate activate command and failed when it received the newly implemented prepare command. Its synthetic profile handling now alternates an unmatchable but valid prepared geometry response and an unavailable preparation response, then requires a fresh activate request for the same tab. The complete smoke run passed and reported three exercised preparation fallback paths, including the background-worker geometry-failure path. Existing profile routing, notification recovery, Options persistence, protected history, and Clear saved data also passed.
+
+`probe-extension-cft.ps1 -Native -PrepareProbe` passed with the integrated host: live Chrome preparation without focus, Unicode snapshot search, direct activation, two-profile routing, and same-profile closed-tab restoration. These headless checks do not test a physical Explorer click. The native taskbar association and synthetic cue transition tests remain separate evidence; the complete visible taskbar-to-tab path, grouped previews, and scaled-window identity still require acceptance. Earlier descriptions of the locator/prepare path as unconnected are superseded by this integration. SPEC.md and protocol/checklist documentation reflect the current behavior without claiming complete guidance acceptance.
+
+## Visible taskbar-to-tab end-to-end check
+
+On 2026-09-09, `tools/probe-extension-cft.ps1 -Native -WindowBounds -TaskbarFlow` completed successfully with Chrome for Testing 153.0.8010.36. The target browser reported bounds 120,140,900,600, matching Windows physical bounds at 96 DPI. Host SHA256: `aea1cb75153a419f0fa8737f08f759e67492e8caf0c4fa77dc5f280327b07a30`; built worker SHA256: `627d9367fc30ddceabb6503c4e6c761aa4a04f2f61c3e4fb87bf8404fcd22a15`.
+
+The new `guidance_probe.exe` helper establishes an owned foreground window so the target Chrome window starts behind it. It opens production search and selects the unique fixture through the host. It verifies that the first cue aligns with the taskbar target while Chrome remains in the background, independently rechecks the taskbar association/rectangle immediately before input, and confirms the click hit-tests to that taskbar. Physical mouse-down hides the first cue before release. The actual Explorer click brings the intended Chrome window forward; the second cue aligns with the selected tab header exposed by Chrome UI Automation. A subsequent mouse-down on the isolated page dismisses the second cue, which remains hidden afterward. The helper restores its cursor and foreground state and releases only a mouse button it injected. The outer harness cleans its browser profiles, host, and exact-origin registration.
+
+The first physical flow passed, but the initial harness then accidentally repeated the helper during the separate duplicate-title scenario. That broad text-edit mistake was corrected so the physical helper runs only on its single-window fixture. The complete final suite passed physical guidance, Unicode snapshot search, duplicate-title routing across two profiles, and original-profile closed-tab restoration. A prior helper build also required renaming a function that collided with Windows' `near` macro; the script now checks for the compiled helper before launching any browser.
+
+This is direct evidence of one complete taskbar-first interaction with a normal visible window and unambiguous app group. It is not acceptance of minimized/maximized targets, grouped previews, mixed scaling, physical hotkey delivery (the helper posts the hotkey message), timing budgets, or screen-reader behavior. No production behavior changed in this verification step; SPEC.md records the evidence and remaining limits without shrinking those requirements. No dependency was added.
+
+## Window-state checks and user-requested pause
+
+On 2026-09-09, the visible Chrome harness gained `-WindowState minimized|maximized`. The minimized direct-activation run passed: Chrome reported saved bounds 120,140,900,600 while Windows reported iconic bounds -32000,-32000,160,28; activation restored normal state, actual Windows foreground, and the tab cue. A maximized physical taskbar-flow run also passed and retained maximized state. Chrome and Windows both reported -8,-8,3856,1568 at 96 DPI. Both complete suites subsequently passed profile routing and restoration.
+
+The native identity helper now supports comparison with saved normal placement for minimized windows, converts workspace coordinates using the monitor work-area offset, and refuses placement flagged to restore maximized. Native tests passed minimized matching, ambiguity with an overlapping visible window, and maximized-restore refusal. Windows documents the coordinate distinction in [WINDOWPLACEMENT](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-windowplacement).
+
+The experimental minimized taskbar-to-tab path failed repeatedly: the taskbar cue appeared and the click restored Chrome, but the second cue was absent. Cue handling was tightened to distinguish top-level show events and allow taskbar layout activity during the confirmed click; duplicate location notifications with unchanged continuation bounds are now ignored. Cue regressions pass, including the duplicate-location case, but these changes did not resolve the live minimized failure. Bounded test-only WinEvent diagnostics record event codes, target categories, and times without titles or URLs. The most recent harness addition records up to 128 command/response types and fixed statuses to distinguish host continuation from browser activation; that new protocol trace has not yet been run.
+
+The user requested a pause during this investigation. Production native window verification again explicitly excludes iconic windows, preserving the verified direct-activation path while retaining saved-placement work for continued investigation. The missing minimized second cue remains unresolved; do not describe minimized taskbar guidance as complete or enable it solely because the helper tests pass. SPEC.md and OUTSTANDING.md reflect this checkpoint. No third-party dependency was added.
+
+## Minimized taskbar guidance restore transition
+
+On 2026-09-11, the deferred protocol trace ran with a diagnostic host that allowed iconic targets. The worker recorded `prepare` → `prepared` → `activate` → `located` → `result ok`, proving the host continued after the taskbar click and Chrome answered with fresh bounds. The WinEvent trace explained the missing second cue: Explorer raised `EVENT_SYSTEM_FOREGROUND` for the Chrome window while it was still iconic (bounds -32000,-32000,160,28), and the restore `EVENT_OBJECT_LOCATIONCHANGE` arrived about 16 ms later. The continuation had captured the iconic bounds, so the restore move looked like the target leaving its position and cancelled the cue generation before `located` arrived.
+
+`native/cue.hpp` now records whether the owner was iconic when the continuation became ready. While that flag is set, location changes on the owner are accepted until the window is no longer iconic; the first non-iconic rectangle becomes the continuation bounds and later movement cancels as before. `hide()` clears the flag. `native/window_identity.hpp` no longer excludes iconic windows, so saved-placement matching applies in production; the maximized-restore refusal and ambiguity checks are unchanged.
+
+Verification: `tools\test-cue.cmd` gained a minimized fixture whose taskbar release sets foreground first and restores afterwards, and checks that a subsequent move still cancels. `tools\test-window-identity.cmd`, `tools\build.cmd` regressions, and `tools\smoke.cmd` pass. `probe-extension-cft.ps1 -Native -WindowBounds -TaskbarFlow` passed with `-WindowState minimized`, `normal`, and `maximized` against Chrome for Testing 153.0.8010.36 at 96 DPI, including the final state checks and the following profile-routing and restoration scenarios. Host SHA256: `18599f2b6fa1dcfeffe67b52df22e3163bdb3dd1e45e001e8533c0a6e5c01e6d`; worker SHA256: `627d9367fc30ddceabb6503c4e6c761aa4a04f2f61c3e4fb87bf8404fcd22a15`.
+
+Because guided mode now routes minimized targets through the taskbar cue, the harness rejects `-WindowState minimized` without `-TaskbarFlow`. This remains one layout and app-group case; grouped previews, mixed scaling, and accessibility acceptance are still open. SPEC.md reflects the enabled behavior without weakening its cancellation requirements. No dependency was added.
+
+## Pinned and grouped tab headers
+
+On 2026-09-11, `probe-extension-cft.ps1` gained `-TabLayout normal|pinned|grouped|collapsed`, which pins the fixture tab or places it in a titled tab group (collapsed when requested) before the physical taskbar flow. Group runs add the `tabGroups` permission to the disposable test manifest only; production permissions are unchanged. Pinned and grouped runs initially failed with Chrome foreground and no second cue. A scratch UI Automation dump showed the cause: Chrome names a tab header `<title> - Pinned` or `<title> - Part of group <name>`, so the exact-title comparison in `native/tab_locator.hpp` rejected the selected header.
+
+`tab_name_matches` now accepts the exact title or the title followed by `" - "` and any suffix. Only selected, on-screen tab headers outside document subtrees are still considered, and the unique-match requirement is unchanged. Chrome expands a collapsed group when the prepared tab is selected, so the collapsed case needs no additional handling. `tools\test-window-identity.cmd` covers exact, suffixed, prefix-only, and reordered names. The pinned, grouped, collapsed, and normal physical flows pass with host SHA256 `c5f6920107b0e8f5e0fc3636bb6d8963340e6b8e67d83cf9b7fbafe888270a5d`, each followed by the passing two-profile routing and restoration scenarios.
+
+Limits: suffix text is not validated against a list, so a selected tab whose title merely begins with the target title plus `" - "` would also match; the browser-side `prepare` step has already confirmed the intended tab is selected, which bounds that risk. Group headers were not used as targets. Taskbar grouping previews, mixed scaling, and accessibility acceptance remain open. No dependency was added.
+
+## Grouped taskbar identity and actual Windows foreground
+
+On 2026-09-11, the harness gained `-ExtraWindow`, which opens a second unfocused window in the same test profile at 1050,140,700,500, and `guidance_probe.exe` gained a `fallback` mode. The probe selects the fixture window by its unique bounds, requires `locate_taskbar` to reject the shared identity, hands the foreground from its fixture to the search window (a posted `WM_HOTKEY` cannot take it, unlike a real hotkey), presses Enter, and requires a foreground Chrome window with a cue at the located tab header, dismissed by a click.
+
+The first runs failed with the protocol trace `prepare → prepared → activate → located → result ok` and the Windows foreground on a different Chrome instance. After the overlay hid, Windows activated another window, Chrome's `windows.update({focused:true})` did not obtain the foreground, yet Chrome reported `focused: true`. The host therefore hid the cue silently and no failure was reported.
+
+Changes: `activate` now carries `guided: true` in direct mode as well (unscaled desktops only), so `located` arrives without arming a cue. On `located`, the host verifies the window natively, calls `SetForegroundWindow` on it when Windows has not raised it, and records a foreground failure when that is refused; the following `result: ok` is then treated as `focus`, producing the existing retry notification. Cue creation still requires the verified window to be foreground. This uses the host's own entitlement as the process that received the user's Enter; it does not use `AllowSetForegroundWindow` or alter foreground lock settings.
+
+Verification: `tools\build.cmd` regressions, 16 extension tests, `tools\smoke.cmd` (three preparation fallback paths), the minimized taskbar flow, and the `-ExtraWindow` fallback flow pass with host SHA256 `2646730e998cc83823b2bf2058d34c915385b9a81252f82c900651c3dcc77e58`. Limits: the foreground discrepancy was reproduced with a test fixture rather than an arbitrary application; scaled desktops still skip the location hint and rely on Chrome's report; grouped taskbar previews remain unused. No dependency was added.
+
+## Mixed-scaling gate and delegated foreground permission
+
+On 2026-09-11, `probe-extension-cft.ps1` gained `-Monitor secondary`, which places the fixture window in the first non-primary monitor's work area. The first run exposed two facts. The development desktop is mixed: the primary is 96 DPI and the tested secondary monitor is 125% (Chrome DIP bounds 3960,-1711,1125,752 versus physical 3990,-2139,1406,939 at DPI 120). Yet `unscaled_desktop()` had returned true, because `GetScaleFactorForMonitor` reported 100% for that monitor; every earlier guidance run therefore executed on a desktop the gate believed unscaled. The host still behaved safely because bounds matching failed on the scaled monitor and fell back to direct activation.
+
+`native/window_identity.hpp` now gates on `GetDpiForMonitor(MDT_EFFECTIVE_DPI)`. `guidance_geometry_available()` is true when every monitor is 96 DPI or the primary monitor is; `window_geometry_verified()` accepts a matched window only on a 96-DPI monitor, and on a mixed desktop only on the primary, where Chrome's DIP origin coincides with physical pixels. `tools\test-window-identity.cmd` cross-checks both against per-window DPI on every monitor and reports the desktop (`3 monitors, all at 96 DPI: no`). Conversion of Chrome's DIP display layout for scaled monitors is not implemented; those windows use direct activation without a cue.
+
+The secondary-monitor run then failed because Chrome's `windows.update({focused:true})` did not obtain the Windows foreground after search hid, with no verified window for the host to raise. The transport now records each bridge connection's client process (`GetNamedPipeClientProcessId`), and `browser_process()` walks up to three ancestors (Chrome starts hosts through `cmd.exe`) to the first chrome.exe image. Before hiding the overlay, `activate_selection` calls `AllowSetForegroundWindow` for that process, delegating the permission the foreground host holds from the user's Enter. A temporary file diagnostic used to find the cmd.exe intermediary was removed after the fix.
+
+`guidance_probe.exe direct` owns the foreground, hands it to search, presses Enter, and requires a foreground Chrome window with no cue. The `-Monitor secondary` run, the primary `-TaskbarFlow`, `-ExtraWindow`, `tools\smoke.cmd`, cue, identity, and build regressions pass with host SHA256 `93525435581699a7e092778691e7b205819690ed67ff2cb14b859ed971cf3687`. Limits: 96-DPI secondary monitors on mixed desktops are excluded from cues pending DIP-layout evidence; no probe covers a 96-DPI-only desktop other than by construction of the gate; taskbar cues on secondary taskbars remain unverified because the available secondary monitor is scaled. No dependency was added.
+
+## Screen-reader names for the search overlay
+
+On 2026-09-11, `native/accessibility.hpp` added `AccessibleNames`, which uses the Windows accessibility property service (`IAccPropServices`, oleacc) to annotate the search input, results list, and status label. It sets both the MSAA name (`PROPID_ACC_NAME`) and the UI Automation `Name` property, marks the status label as a polite live region (`LiveSetting`), and clears the annotations on window destruction. GUID values are defined locally from the SDK headers to avoid `initguid.h` ordering; the host links `oleacc.lib` and initializes a single-threaded apartment on the UI thread.
+
+Verification exposed a tooling issue: the .NET `UIAutomationClient` assembly in Windows PowerShell reported the Edit control as an unnamed `Pane`, while MSAA and a native UI Automation client both returned the expected names. `tests/accessibility_probe.cpp` (built by `tools\build-accessibility-probe.cmd`) therefore checks exposure from another process through the native `IUIAutomation` client: Edit named "Find a tab by title, site, or profile", List named "Matching tabs", Text named "Search status" with `LiveSetting` = polite. `tools\smoke.ps1` requires the probe and runs it after the overlay opens; the full smoke passes. Private bytes in that run rose from about 2.5 MiB to about 3.8 MiB with oleacc and COM loaded, still far below budget.
+
+Options controls already carry preceding static labels, which the UI Automation proxies use as names, and were not annotated. Actual Narrator/NVDA reading, high-contrast theme review, and Options accessibility acceptance remain manual checks. No dependency was added.
+
+## Off-the-record exclusion in the live browser
+
+On 2026-09-11, `probe-extension-cft.ps1` gained `-Incognito`. It opens a browser-endpoint DevTools socket, creates a separate browser context (`Target.createBrowserContext`, Chrome's off-the-record profile type that backs incognito), and loads a page titled "HypeTabs incognito secret" in a new window. `Target.getTargets` confirms the page loaded. Because the manifest declares `"incognito": "not_allowed"`, `chrome.tabs.query({})` in the worker returns no incognito tab and nothing with that title. Native search for "incognito secret" returns zero results while the page is open and again after `Target.closeTarget`, so neither collection nor the recently-closed import received it. The context is disposed afterwards. The run passed along with the regular routing and restoration scenarios.
+
+Limits: the context is created through DevTools rather than the Ctrl+Shift+N gesture, and the extension is never allowed in incognito, so the worker-side `incognito` filters are exercised only by unit tests. No production behavior changed; no dependency was added.
+
+## Host measurement after the 2026-09-11 changes
+
+`tools\measure-host.ps1` (1,000 open, 1,000 closed, five synthetic profile connections, ten window IDs, Idle priority) completed on 2026-09-11 with executable SHA256 `0b4123ada78a07ffb4849ac219d3268bcbdb776504b0f4d04ca110dde28e9056`: 0.0625 CPU-seconds over 300 s (about 0.02% of one core), private working set 6.52 → 6.55 MiB, overlay-message-to-visible p95 13.3 ms, repeated-query p95 4.2 ms over 100 trials. The accessibility annotations, foreground delegation, and per-monitor DPI gate did not measurably change idle cost. The same limits as the earlier measurement apply: synthetic transport and window messages, no Chrome/bridge overhead, physical hotkey, rendering completion, or peak working set.
+
+One later `-TaskbarFlow` run on 2026-09-11 failed once with the trace ending at `prepared` and no cue or `activate`; the immediate rerun passed. The only host path that drops a prepared request without activation is an armed cue whose generation changed (a click or Escape during preparation), so ambient input during the unattended run is the suspected cause. By design a click during preparation cancels the pending selection rather than raising Chrome over the window the user just clicked; this remains the documented behavior and was not changed.
+
+## Reduced-motion cues in the live flow
+
+On 2026-09-11, `probe-extension-cft.ps1 -ReducedMotion` writes a version 4 settings record with the outline preference into the isolated data directory before starting the host, and `guidance_probe.exe` accepts an `outline` flag that makes both cue-shape checks require the static outline (target rectangle expanded by 3 px) rather than the arrow. The run passed: taskbar-stage outline, physical click, tab-header outline, dismissal, and the following routing/restoration scenarios. One earlier attempt failed after the taskbar click with no Chrome foreground change (foreground moved to Explorer, then to an unrelated window about three seconds later); the rerun passed unchanged. Together with the run whose trace ended at `prepared`, this is the second intermittent failure of the unattended physical flow today; both are consistent with ambient input or Explorer timing rather than a code path, but neither is proven. The probe's flags (`fallback`, `direct`, `outline`) may now be combined except `fallback` with `direct`.
+
+## Stopped-profile explanation and the harness hang
+
+On 2026-09-11, the `-Native` harness gained a final scenario: after the restored tab is closed again, the second Chrome for Testing profile is exited and the harness waits for its bridge process to disappear. The closed entry remains searchable, Enter leaves the overlay open with the status "Open this Chrome profile and reconnect its extension, then try again.", and the first profile receives no tab for that URL. The first attempt checked too early (1.5 s) and saw the default status because the bridge disconnect had not yet arrived; waiting for the bridge exit fixed the scenario, not the host. Verified stopped-profile launching remains unimplemented because Chrome gives the extension no profile-directory identity and the specification forbids unverified launches.
+
+The intermittent "hang" of failing harness runs was also explained: Chrome was started with `-NoNewWindow` and inherited the script's stdout/stderr; Chrome children that outlive `Stop-Process` (notably the crash handler) kept those handles open, so the WSL/`timeout` wrapper and any `| grep` pipe never saw end-of-stream. Both Chrome launches now redirect stdio to files in the temporary directory; the run completes and exits normally. `native-probe-ui.ps1` gained a `Text` helper (WM_GETTEXT) for reading control text.
+
+A further exit stall was observed after all cleanup steps had completed, on some runs only, when the harness was launched from WSL with its output piped back into Linux: the WSL interop wrapper waits for every Windows holder of that pipe. The script itself completes in every observed run, and running it through `cmd.exe /c "powershell ... > log 2>&1"` (Windows-side redirection) or directly from Windows PowerShell exits immediately. The isolated host is started with redirected stdio as well. The worker-readiness checks also tolerate the brief window in which DevTools lists the service-worker target before its globals exist.
+
+## Display layout hints for scaled monitors
+
+On 2026-09-11 the user approved adding the `system.display` permission. The worker now sends one `display` message per display after `hello` and on `chrome.system.display.onDisplayChanged` (DIP bounds, `dpiX`, primary flag; malformed entries skipped; at most 16). `browser_state.hpp` validates the message; `main.cpp` stages the sequence and adopts it on the final index. `window_identity.hpp` gained `ChromeDisplay`/`PhysicalMonitor`, `match_displays` (same DPI and primary flag, scaled size within 2 px, nearest scaled center, rejecting ties and unmatched displays), `physical_from_dip`, and a 2 px tolerance in `unique_window_at`. `verified_chrome_window` converts through the layout when one is known and also requires the matched window's monitor DPI to equal the display's; otherwise the 96-DPI rules apply. The taskbar worker receives the layout with each request.
+
+Measured layout on the development desktop: Chrome DIP displays (0,0,3840×1600 @96), (3840,−1481,1728×3073 @120), (−1728,−1488,1728×3073 @120); physical monitors (0,0,3840×1600), (3840,−1851,2160×3840), (−2160,−1859,2160×3840). A window Chrome reported at 3960,−1341,1125×752 converted exactly to the observed 3990,−1676,1406×939 (height within rounding). `tools\test-window-identity.cmd` encodes this layout and rejects wrong DPI, twin monitors, and empty inputs; extension tests cover ordering, malformed entries, and refresh; browser-state tests cover validation.
+
+Live results: `-Native -WindowBounds -TaskbarFlow -Monitor secondary` passed the physical taskbar-to-tab flow twice on the 125% monitor (secondary taskbar button, converted bounds, tab-header cue). Two findings shaped the harness: Chrome for Testing 153 exits in `--headless=new` as soon as the worker calls `getInfo()` (permission alone is harmless), so both test browsers are visible now; and Chrome relaunches itself when started inside a job object (the `cmd.exe /c` wrapper used from WSL), so the harness resolves the browser process from the profile's DevTools port and command line instead of trusting the launcher's exit state. The harness places the secondary fixture from Chrome's own display work area rather than .NET's virtualized screen coordinates.
+
+The last unattended attempts failed at the physical taskbar click (Explorer took the foreground but never activated Chrome). The foreground owner at that time was a fullscreen game, which explains the earlier intermittent click failures as well. The cue now tolerates a repeated press on the same taskbar button (previously a second click cancelled guidance) with a new `tools\test-cue.cmd` case, and once the desktop was idle the cue suite (with the repeated-press case), the smoke suite, and the secondary-monitor taskbar flow all passed with the final build (host SHA256 `ac3e1a1280e2fcf260c627da5547aaeaf05ddbb3243e8e485ba84aa081f2122c`). No third-party dependency was added; one Chrome permission was added with approval.
+
+## Dark presentation and developer link
+
+On 2026-09-11, following the updated `AGENTS.md` conventions, `native/theme.hpp` added a `Theme` that is dark unless a Windows high-contrast scheme is active: class background brush, `WM_CTLCOLORSTATIC/EDIT/LISTBOX/BTN` handling in both window procedures (light text, dark fields, muted text for status and the developer link), `DWMWA_USE_IMMERSIVE_DARK_MODE` for title bars, and `SetWindowTheme(L"DarkMode_Explorer")` on child controls. The host links `dwmapi.lib` and `uxtheme.lib`. A tray-menu item and a right-aligned `SS_NOTIFY` static at the bottom of Options both read "Developed by hypedriven.com" and open the fixed `https://www.hypedriven.com` through `ShellExecuteW`; the Options window and its layout extent grew by 32 logical pixels for the link row.
+
+Verification: screenshots of the isolated host (search overlay and Options) confirmed the dark palette, dark title bars, and the visible link; `tools\test-options-layout.cmd` and `tools\smoke.cmd` pass. Known cosmetic limits: the hotkey common control keeps its white field, and a disabled check box (only in the smoke's isolated sign-in mode) shows the classic etched text. `WIDGETS.md` was reviewed: no floating widget exists in HypeTabs; the cue overlay already follows the applicable widget principles and the review is recorded in SPEC.md. No dependency was added.
+
+## Tray conventions (SYSTRAY.md)
+
+On 2026-09-11 the tray menu gained an About window (`HypeTabsAbout`, dark-themed): version, description, a "Developed by hypedriven.com" link, and a project-page link that appears only when the `project_site` constant is set (no public repository is known yet). The first non-isolated run asks once whether to start at sign-in and then saves settings so the prompt does not recur; on later runs a `StartupRegistration::Status::OtherLocation` result (registration path differs from the running executable) triggers a prompt to move the registration to this copy. Isolated data directories (`--data-dir`, used by every harness) skip both prompts, so `tools\smoke.cmd` still passes (10 PASS); the About window was confirmed by screenshot. Idle priority and background mode were already in place. No dependency was added.
+
+## State-colored icon, screenshots, and repository
+
+On 2026-09-11 `native/app_icon.hpp` added a runtime-drawn tab glyph (`CreateIconIndirect` from GDI color and mask bitmaps) in four state colors; `update_icons()` compares the derived state (pending requests or an armed cue → active; paused; any connected profile → connected; otherwise disconnected) on each main-window message and redraws the tray and window icons only on change. The About window's project link now points at `https://github.com/HypeDriven/hypetabs`. `tools\screenshots.ps1` produces the README images from an isolated host with synthetic profiles; it sets per-monitor-v2 thread DPI awareness so window rectangles and screen copies agree on the mixed-DPI desktop. Smoke passes (10 PASS). No dependency was added.
