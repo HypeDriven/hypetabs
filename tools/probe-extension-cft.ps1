@@ -1,4 +1,4 @@
-param([switch]$Native, [switch]$WindowBounds, [switch]$WasmBenchmark, [switch]$PrepareProbe, [switch]$TaskbarFlow, [ValidateSet('normal','minimized','maximized')][string]$WindowState = 'normal', [ValidateSet('normal','pinned','grouped','collapsed')][string]$TabLayout = 'normal', [switch]$ExtraWindow, [ValidateSet('primary','secondary')][string]$Monitor = 'primary', [switch]$Incognito, [switch]$ReducedMotion)
+param([switch]$Native, [switch]$WindowBounds, [switch]$WasmBenchmark, [switch]$PrepareProbe, [switch]$TaskbarFlow, [ValidateSet('normal','minimized','maximized')][string]$WindowState = 'normal', [ValidateSet('normal','pinned','grouped','collapsed')][string]$TabLayout = 'normal', [switch]$ExtraWindow, [ValidateSet('primary','secondary')][string]$Monitor = 'primary', [switch]$Incognito, [switch]$ReducedMotion, [string]$CaptureDir = '')
 $ErrorActionPreference = 'Stop'
 if ($TaskbarFlow -and (!$Native -or !$WindowBounds)) { throw 'TaskbarFlow requires Native and WindowBounds.' }
 if ($TaskbarFlow -and !(Test-Path -LiteralPath (Join-Path $PSScriptRoot '..\build\guidance_probe.exe'))) { throw 'Build tools\build-guidance-probe.cmd before TaskbarFlow.' }
@@ -318,6 +318,7 @@ try {
             [void](Invoke-TestWorker "globalThis.guidanceTrace=[];globalThis.savedGuidanceCommand=command;globalThis.savedGuidanceSend=send;command=async(m,p)=>{guidanceTrace.length<128&&guidanceTrace.push({direction:'in',type:m.type});return savedGuidanceCommand(m,p)};send=m=>{if(guidanceTrace.length<128&&['prepared','located','result'].includes(m.type))guidanceTrace.push({direction:'out',type:m.type,status:m.status});savedGuidanceSend(m)};true")
             # Native stderr must not become a terminating error before the exit code is read.
             $probeFlags = @(); if ($ExtraWindow) { $probeFlags += 'fallback' }; if ($ReducedMotion) { $probeFlags += 'outline' }
+            if ($CaptureDir) { [void](New-Item -ItemType Directory -Path $CaptureDir -Force); $probeFlags += ('capture=' + (Resolve-Path $CaptureDir).ProviderPath) }
             $guidanceOutput = & { $ErrorActionPreference = 'Continue'; & $guidanceProbe $app.Id $browser.Id @probeFlags 2>&1 }
             $guidanceExit = $LASTEXITCODE
             $guidanceOutput | ForEach-Object { Write-Output ([string]$_) }

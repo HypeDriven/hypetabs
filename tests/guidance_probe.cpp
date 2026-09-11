@@ -5,6 +5,29 @@
 #include "../native/window_identity.hpp"
 #include <stdexcept>
 #include <iostream>
+#include <objidl.h>
+#include <gdiplus.h>
+#include <string>
+// Optional screen captures of both cue stages for documentation (PNG via GDI+).
+std::wstring capture_dir;
+void capture(RECT region, const wchar_t* name) {
+    if (capture_dir.empty()) return;
+    int width = region.right - region.left, height = region.bottom - region.top;
+    if (width <= 0 || height <= 0) return;
+    HDC screen = GetDC(nullptr); HDC dc = CreateCompatibleDC(screen);
+    HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height); auto previous = SelectObject(dc, bitmap);
+    // CAPTUREBLT includes layered windows such as the cue overlay.
+    BitBlt(dc, 0, 0, width, height, screen, region.left, region.top, SRCCOPY | CAPTUREBLT);
+    SelectObject(dc, previous); DeleteDC(dc); ReleaseDC(nullptr, screen);
+    Gdiplus::Bitmap image(bitmap, nullptr);
+    CLSID png{0x557cf406, 0x1a04, 0x11d3, {0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e}};
+    image.Save((capture_dir + L"\\" + name).c_str(), &png, nullptr);
+    DeleteObject(bitmap);
+}
+RECT around(RECT a, RECT b, int margin) {
+    RECT r{std::min(a.left, b.left) - margin, std::min(a.top, b.top) - margin, std::max(a.right, b.right) + margin, std::max(a.bottom, b.bottom) + margin};
+    return r;
+}
 void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
 void pump(unsigned ms) {
     auto end = GetTickCount64() + ms;
@@ -63,8 +86,10 @@ int wmain(int argc, wchar_t** argv) {
     bool direct = false, fallback = false;
     for (int i = 3; i < argc; ++i) {
         std::wstring_view flag = argv[i];
-        if (flag == L"fallback") fallback = true; else if (flag == L"direct") direct = true; else if (flag == L"outline") expect_outline = true; else return 2;
+        if (flag == L"fallback") fallback = true; else if (flag == L"direct") direct = true; else if (flag == L"outline") expect_outline = true;
+        else if (flag.starts_with(L"capture=")) capture_dir = std::wstring(flag.substr(8)); else return 2;
     }
+    Gdiplus::GdiplusStartupInput gdiplus_input; ULONG_PTR gdiplus_token{}; Gdiplus::GdiplusStartup(&gdiplus_token, &gdiplus_input, nullptr);
     if (direct && fallback) return 2;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     auto initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED); if (FAILED(initialized)) return 3;
@@ -136,6 +161,7 @@ int wmain(int argc, wchar_t** argv) {
         require(cue != nullptr, "no taskbar-stage cue appeared");
         RECT first{}; GetWindowRect(cue, &first);
         require(GetForegroundWindow() != browser && cue_near(first, button.rectangle), "first cue was not at the taskbar with Chrome still in background");
+        { RECT wide = around(first, button.rectangle, 0); wide.left -= 220; wide.right += 220; wide.top -= 12; wide.bottom += 8; capture(wide, L"cue-taskbar.png"); }
         auto rechecked = hype::locate_taskbar(browser, stop);
         require(rechecked.found && EqualRect(&button.rectangle, &rechecked.rectangle), "taskbar target changed before test click");
         trace_browser = browser; trace_taskbar = button.taskbar; trace_host = host_pid;
@@ -151,6 +177,7 @@ int wmain(int argc, wchar_t** argv) {
         auto tab = hype::locate_tab(browser, L"HypeTabs live browser tab", 1, stop);
         RECT second{}; GetWindowRect(cue, &second);
         require(tab.found && cue_near(second, tab.rectangle), "second cue did not identify the actual selected tab header");
+        { RECT wide = around(second, tab.rectangle, 0); wide.left -= 160; wide.right += 260; wide.top -= 16; wide.bottom += 60; capture(wide, L"cue-tab.png"); }
         RECT area{}; GetWindowRect(browser, &area); POINT content{area.right - 60, area.bottom - 70};
         require(GetAncestor(WindowFromPoint(content), GA_ROOT) == browser, "final test click would miss owned Chrome window");
         move_to(content); input(MOUSEEVENTF_LEFTDOWN); pump(50);
@@ -168,5 +195,6 @@ int wmain(int argc, wchar_t** argv) {
     INPUT release{}; release.type = INPUT_MOUSE; release.mi.dwFlags = MOUSEEVENTF_LEFTUP; if (injected_down) SendInput(1, &release, sizeof(release));
     if (fixture) DestroyWindow(fixture);
     SetCursorPos(cursor.x, cursor.y); if (IsWindow(prior)) SetForegroundWindow(prior);
+    Gdiplus::GdiplusShutdown(gdiplus_token);
     CoUninitialize(); return result;
 }

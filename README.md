@@ -10,6 +10,22 @@ A small native Windows tray application for finding Chrome tabs across profiles.
 
 Captured from an isolated host fed with synthetic profiles by `tools\screenshots.ps1`; the tray icon changes color with state (grey disconnected, blue connected, amber paused, green while a tab is being activated).
 
+### How guidance works
+
+Pick a result and press Enter. If the tab's Chrome window is not in front, HypeTabs does not steal focus: it selects the tab in the background and points at that window's taskbar button. When you click the button, the cue disappears and a second cue points at the tab header in the window that just came forward. Any other click or Escape dismisses a cue; direct activation is used whenever a position cannot be verified.
+
+| 1. Arrow at the taskbar button of the window that holds the tab | 2. Arrow at the tab header after the window comes forward |
+| --- | --- |
+| ![Arrow cue above the Chrome taskbar button](docs/screenshots/cue-taskbar.png) | ![Arrow cue above the selected Chrome tab header](docs/screenshots/cue-tab.png) |
+
+With Windows animation effects off, or the "Use outline cues (reduced motion)" option, the same two stages draw a static outline instead:
+
+| Outline at the taskbar button | Outline at the tab header |
+| --- | --- |
+| ![Outline cue around the Chrome taskbar button](docs/screenshots/cue-taskbar-outline.png) | ![Outline cue around the selected Chrome tab header](docs/screenshots/cue-tab-outline.png) |
+
+These four images come from the live harness (`tools\probe-extension-cft.ps1 -Native -WindowBounds -TaskbarFlow -CaptureDir <folder>`), which records the screen at both cue stages of a real Chrome for Testing window.
+
 This is a development build. Live Chrome for Testing checks now cover the production native bridge, duplicate-title search across two profiles, activation, and same-profile closed-tab reopening. Ordinary Chrome setup, visible-window guidance, remaining options, reliability/performance acceptance, and the WASM comparison are unfinished. See [SPEC.md](SPEC.md), [OUTSTANDING.md](OUTSTANDING.md), and [implementation evidence](docs/IMPLEMENTATION.md).
 
 ## Build and test

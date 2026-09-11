@@ -32,7 +32,7 @@ The harness refuses to start if `HypeTabs*` processes or the `com.hypetabs.bridg
 
 ## Screenshots
 
-`powershell -NoProfile -ExecutionPolicy Bypass -File tools\screenshots.ps1` starts an isolated host, feeds two synthetic profiles over the local pipe, and writes `docs\screenshots\search.png`, `options.png`, and `about.png` (used by the README). Requires a built host and an idle desktop.
+`powershell -NoProfile -ExecutionPolicy Bypass -File tools\screenshots.ps1` starts an isolated host, feeds two synthetic profiles over the local pipe, and writes `docs\screenshots\search.png`, `options.png`, and `about.png` (used by the README). Requires a built host and an idle desktop. Cue-stage captures come from the live harness with `-CaptureDir <folder>` (writes `cue-taskbar.png` and `cue-tab.png` at the two guidance stages); the arrow style needs Windows animation effects on, otherwise outlines are captured.
 
 ## Manual checks
 
