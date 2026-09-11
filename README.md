@@ -85,3 +85,7 @@ powershell -NoProfile -File "$env:LOCALAPPDATA\HypeTabs\App\uninstall.ps1"
 ```
 
 The installer includes this script. For an older development installation, run `tools\uninstall.ps1` from this repository instead. Removal deletes known application files, saved settings, and retained closed tabs; `-KeepData` preserves settings and retained tabs. Use `-WhatIf` to preview without changes. Only matching startup/native-host registrations are removed, and unknown files and unrelated registry values are preserved. Redirected directories are rejected. The script requires the app and bridge to be stopped; removing the Chrome extension first prevents reconnection. Isolated removal tests run with `tools\test-uninstall.cmd`; clean-account installation/removal acceptance remains outstanding.
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE.md). Required Notice: Copyright Hype Driven Development, Inc. (http://hypedriven.com)
