@@ -11,6 +11,7 @@ Commands are Windows-side (Visual Studio 2022 Build Tools v18, Windows SDK 10.0.
 | `tools\test-cue.cmd` | Cue overlay: click-through, dismissal, taskbar continuation, repeated press, minimized restore, timeout. Needs the foreground (owned test windows). |
 | `tools\test-window-identity.cmd` | Bounds matching, saved placement, scaling gate cross-check, display-layout mapping (real 3-monitor layout encoded). |
 | `tools\test-options-layout.cmd` | Options DPI layout, scrolling, fit. |
+| `tools\test-shortcut.cmd` | Starts an isolated host and injects Win+W twice with `SendInput`; expects the keyboard-hook shortcut to show and hide the search widget with the foreground staying on HypeTabs. Injects keyboard input — never run while the user is typing. `RegisterHotKey` for Win+W returns error 1409 on this machine (the shell holds it), which is the case this covers. |
 | `tools\test-install.cmd`, `tools\test-uninstall.cmd` | Installer/uninstaller behavior with isolated files and registry keys. |
 | `tools\test-wasm-url-native.cmd` | Experimental URL kernel equivalence (not production). |
 | `tools\build-guidance-probe.cmd`, `tools\build-accessibility-probe.cmd`, `tools\build-locator-probe.cmd` | Helper executables required by the harnesses below. |

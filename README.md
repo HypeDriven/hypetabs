@@ -1,6 +1,6 @@
 # HypeTabs
 
-A small native Windows tray application for finding Chrome tabs across profiles. C++ host and native bridge; provisional TypeScript extension. No third-party runtime dependencies. The optional WASM experiment uses an approved external compiler.
+A small native Windows tray application for finding Chrome tabs across profiles from a floating search widget. C++ host and native bridge; provisional TypeScript extension. No third-party runtime dependencies. The optional WASM experiment uses an approved external compiler.
 
 ## Screenshots
 
@@ -74,7 +74,7 @@ Setup checks source artifacts and destination paths before copying. It refuses r
 3. In Chrome, open `chrome://extensions`, enable Developer mode, and choose **Load unpacked**. Select `%LOCALAPPDATA%\HypeTabs\App\extension`. Copy the extension ID displayed there.
 4. Run `powershell -NoProfile -File tools\install.ps1 -ExtensionId YOUR_EXTENSION_ID` to register the bridge for that extension only.
 5. Start `%LOCALAPPDATA%\HypeTabs\App\HypeTabs.exe`, then click the extension's toolbar action to reconnect. Repeat loading the same extension directory for each participating Chrome profile.
-6. Press **Ctrl+Alt+T**, or use the tray menu's Search command. Change the shortcut in Options if it conflicts with another application.
+6. Press **Win+W**, or use the tray menu's Search command. Change the shortcut in Options if it conflicts with another application; a shortcut needs Ctrl, Alt, or the Windows key. Windows-key combinations the shell reserves (Win+W normally opens Widgets) are intercepted with a keyboard hook.
 
 Profile names default to a short identifier and can be changed in the tray menu’s Options window. Options also offers opt-in start at sign-in and a persistent outline-cue preference for reduced motion. Disconnected profiles require opening that profile and reconnecting the extension. The extension does not collect incognito tabs or page contents, and search stays local. The baseline implementation remains subject to the outstanding WASM comparison; it is not a measured language winner.
 

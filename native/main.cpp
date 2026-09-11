@@ -5,6 +5,7 @@
 #include <commdlg.h>
 #include <shlobj.h>
 #include <tlhelp32.h>
+#include <windowsx.h>
 #include <string>
 #include <cstddef>
 #include <cwctype>
@@ -23,6 +24,7 @@
 #include "accessibility.hpp"
 #include "theme.hpp"
 #include "app_icon.hpp"
+#include "shortcut_hook.hpp"
 #include <memory>
 
 namespace {
@@ -63,11 +65,19 @@ hype::PendingRequests pending_requests;
 std::unique_ptr<hype::HistoryStore> history_store;
 bool history_save_armed = false;
 // Version 5 appends the cue color (COLORREF; CLR_INVALID = system highlight) to the 24-byte version 4 record.
-struct SavedSettings { uint32_t magic = 0x48545032; uint16_t shortcut{}; uint8_t days = 7; uint8_t version = 5; int64_t history_floor = 0; uint32_t cue_seconds = 5; uint8_t guided = 1; uint8_t reduced_motion = 0; uint8_t reserved[2]{}; uint32_t cue_color = CLR_INVALID; };
+// Version 6 appends the search widget's last size in 96-DPI units (0 = default) to the 32-byte version 5 record.
+struct SavedSettings { uint32_t magic = 0x48545032; uint16_t shortcut{}; uint8_t days = 7; uint8_t version = 6; int64_t history_floor = 0; uint32_t cue_seconds = 5; uint8_t guided = 1; uint8_t reduced_motion = 0; uint8_t reserved[2]{}; uint32_t cue_color = CLR_INVALID; uint32_t widget_width = 0; uint32_t widget_height = 0; };
 COLORREF cue_color = CLR_INVALID, pending_cue_color = CLR_INVALID;
 COLORREF custom_colors[16]{};
-static_assert(sizeof(SavedSettings) == 32); // 24-byte version 4 record plus color and alignment padding
+static_assert(sizeof(SavedSettings) == 40); // 32-byte version 5 record: size fills its padding and adds 8 bytes
 static_assert(offsetof(SavedSettings, cue_color) == 24);
+static_assert(offsetof(SavedSettings, widget_width) == 28);
+// Search widget geometry (WIDGETS.md): borderless, rounded, dragged by its body and resized
+// from its right/bottom edges; only its size persists, position follows the active monitor.
+constexpr int widget_radius = 12, widget_edge = 8, widget_min_width = 360, widget_min_height = 160, widget_default_width = 760;
+uint32_t widget_width = 0, widget_height = 0; // 96-DPI units; 0 = size from eight result rows
+bool widget_sizing = false;
+bool widget_foreground = false; // set once the widget truly holds the foreground, so losing it means a click elsewhere
 constexpr UINT browser_message = WM_APP + 2;
 std::vector<size_t> matches;
 std::vector<std::wstring> match_keys;
@@ -75,7 +85,14 @@ std::vector<std::wstring> displayed_rows;
 bool paused = false;
 HWND previous_window{};
 bool shortcut_registered = false;
-WORD shortcut = MAKEWORD('T', HOTKEYF_CONTROL | HOTKEYF_ALT);
+// The hotkey common control cannot capture the Windows key, so it is carried in a
+// private modifier bit of the saved WORD and edited through a separate check box.
+constexpr BYTE HOTKEYF_WINDOWS = 0x10;
+constexpr WORD default_shortcut = MAKEWORD('W', HOTKEYF_WINDOWS);
+WORD shortcut = default_shortcut;
+// Plain keys and Shift alone would swallow ordinary typing; Ctrl, Alt, or Win must be held.
+bool valid_shortcut(WORD value) { return LOBYTE(value) && (HIBYTE(value) & (HOTKEYF_CONTROL | HOTKEYF_ALT | HOTKEYF_WINDOWS)); }
+std::unique_ptr<hype::ShortcutHook> shortcut_hook; // only for Win combinations the shell keeps from RegisterHotKey
 UINT taskbar_created{};
 std::wstring settings_path;
 hype::StartupRegistration startup;
@@ -94,19 +111,26 @@ std::wstring text(HWND window) {
 }
 UINT modifiers(WORD hotkey) {
     BYTE flags = HIBYTE(hotkey);
-    return MOD_NOREPEAT | ((flags & HOTKEYF_CONTROL) ? MOD_CONTROL : 0) |
-        ((flags & HOTKEYF_ALT) ? MOD_ALT : 0) | ((flags & HOTKEYF_SHIFT) ? MOD_SHIFT : 0);
+    return MOD_NOREPEAT | ((flags & HOTKEYF_CONTROL) ? MOD_CONTROL : 0) | ((flags & HOTKEYF_ALT) ? MOD_ALT : 0) |
+        ((flags & HOTKEYF_SHIFT) ? MOD_SHIFT : 0) | ((flags & HOTKEYF_WINDOWS) ? MOD_WIN : 0);
+}
+void release_shortcut() { UnregisterHotKey(main_window, 1); shortcut_hook.reset(); }
+// Registers `value` as the live shortcut; Win combinations the shell reserves fall back to the keyboard hook.
+bool bind_shortcut(WORD value) {
+    if (RegisterHotKey(main_window, 1, modifiers(value), LOBYTE(value))) return true;
+    if (!(HIBYTE(value) & HOTKEYF_WINDOWS)) return false;
+    shortcut_hook = std::make_unique<hype::ShortcutHook>(main_window, value, 1);
+    if (shortcut_hook->installed()) return true;
+    shortcut_hook.reset(); return false;
 }
 bool set_shortcut(WORD value) {
-    if (!LOBYTE(value) || !(HIBYTE(value) & (HOTKEYF_CONTROL | HOTKEYF_ALT))) return false;
+    if (!valid_shortcut(value)) return false;
     if (value == shortcut && shortcut_registered) return true;
-    // Probe under a second ID before releasing the working shortcut.
-    if (!RegisterHotKey(main_window, 2, modifiers(value), LOBYTE(value))) return false;
-    UnregisterHotKey(main_window, 1);
-    UnregisterHotKey(main_window, 2);
-    if (!RegisterHotKey(main_window, 1, modifiers(value), LOBYTE(value))) {
-        shortcut_registered = RegisterHotKey(main_window, 1, modifiers(shortcut), LOBYTE(shortcut)) != FALSE; return false;
-    }
+    // Probe under a second ID before releasing the working shortcut, unless the hook can take it anyway.
+    if (RegisterHotKey(main_window, 2, modifiers(value), LOBYTE(value))) UnregisterHotKey(main_window, 2);
+    else if (!(HIBYTE(value) & HOTKEYF_WINDOWS)) return false;
+    release_shortcut();
+    if (!bind_shortcut(value)) { shortcut_registered = bind_shortcut(shortcut); return false; }
     shortcut = value; shortcut_registered = true; return true;
 }
 bool save_settings() {
@@ -114,7 +138,7 @@ bool save_settings() {
     HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;
-    SavedSettings settings; settings.shortcut = shortcut; settings.days = static_cast<uint8_t>(browser.retention_days); settings.history_floor = browser.history_floor; settings.cue_seconds = cue_seconds; settings.guided = guided ? 1 : 0; settings.reduced_motion = reduced_motion ? 1 : 0; settings.cue_color = cue_color;
+    SavedSettings settings; settings.shortcut = shortcut; settings.days = static_cast<uint8_t>(browser.retention_days); settings.history_floor = browser.history_floor; settings.cue_seconds = cue_seconds; settings.guided = guided ? 1 : 0; settings.reduced_motion = reduced_motion ? 1 : 0; settings.cue_color = cue_color; settings.widget_width = widget_width; settings.widget_height = widget_height;
     bool ok = WriteFile(file, &settings, sizeof(settings), &written, nullptr) && written == sizeof(settings);
     if (ok) ok = FlushFileBuffers(file) != FALSE;
     CloseHandle(file);
@@ -188,6 +212,7 @@ DWORD browser_process(uint64_t connection) {
     return found;
 }
 void dismiss(bool restore) {
+    widget_foreground = false;
     ShowWindow(main_window, SW_HIDE);
     if (restore && cue) cue->hide();
     if (restore && IsWindow(previous_window)) SetForegroundWindow(previous_window);
@@ -214,15 +239,15 @@ void toggle_search() {
         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     UINT dpi = GetDpiForWindow(main_window);
     int row_height = static_cast<int>(std::max<LRESULT>(1, SendMessageW(results_box, LB_GETITEMHEIGHT, 0, 0)));
-    RECT desired{0, 0, MulDiv(760, static_cast<int>(dpi), 96), 2 * (MulDiv(16, static_cast<int>(dpi), 96) + MulDiv(32, static_cast<int>(dpi), 96) + MulDiv(8, static_cast<int>(dpi), 96)) + 8 * row_height};
-    AdjustWindowRectExForDpi(&desired, static_cast<DWORD>(GetWindowLongPtrW(main_window, GWL_STYLE)), FALSE,
-        static_cast<DWORD>(GetWindowLongPtrW(main_window, GWL_EXSTYLE)), dpi);
-    int width = desired.right - desired.left, height = desired.bottom - desired.top;
+    int width = widget_width ? MulDiv(static_cast<int>(widget_width), static_cast<int>(dpi), 96) : MulDiv(widget_default_width, static_cast<int>(dpi), 96);
+    int height = widget_height ? MulDiv(static_cast<int>(widget_height), static_cast<int>(dpi), 96) :
+        2 * (MulDiv(16, static_cast<int>(dpi), 96) + MulDiv(32, static_cast<int>(dpi), 96) + MulDiv(8, static_cast<int>(dpi), 96)) + 8 * row_height;
     width = std::min(width, static_cast<int>(monitor.rcWork.right - monitor.rcWork.left));
     height = std::min(height, static_cast<int>(monitor.rcWork.bottom - monitor.rcWork.top));
     SetWindowPos(main_window, HWND_TOPMOST, monitor.rcWork.left + (monitor.rcWork.right - monitor.rcWork.left - width) / 2,
         monitor.rcWork.top + (monitor.rcWork.bottom - monitor.rcWork.top - height) / 3, width, height, SWP_SHOWWINDOW);
     SetForegroundWindow(main_window); SetFocus(query_box);
+    widget_foreground = GetForegroundWindow() == main_window;
     SendMessageW(query_box, EM_SETSEL, 0, -1); refresh();
 }
 void update_request_timer() {
@@ -491,11 +516,14 @@ LRESULT CALLBACK options_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     switch (message) {
     case WM_CREATE: {
         options_layout = std::make_unique<hype::OptionsLayout>(window);
-        auto label = control(window, L"STATIC", L"Search shortcut (Ctrl or Alt required)", 0, 0);
+        auto label = control(window, L"STATIC", L"Search shortcut (Ctrl, Alt, or the Windows key required)", 0, 0);
         options_layout->place(label, 20, 20, 380, 24);
         shortcut_box = control(window, HOTKEY_CLASSW, L"Search shortcut", WS_TABSTOP | WS_BORDER, 201);
-        options_layout->place(shortcut_box, 20, 52, 240, 30);
-        SendMessageW(shortcut_box, HKM_SETHOTKEY, shortcut, 0);
+        options_layout->place(shortcut_box, 20, 52, 130, 30);
+        SendMessageW(shortcut_box, HKM_SETHOTKEY, static_cast<WPARAM>(shortcut & ~static_cast<WORD>(HOTKEYF_WINDOWS << 8)), 0);
+        auto windows_key = control(window, L"BUTTON", L"Windows key", WS_TABSTOP | BS_AUTOCHECKBOX, 225);
+        options_layout->place(windows_key, 158, 52, 105, 30);
+        SendMessageW(windows_key, BM_SETCHECK, (HIBYTE(shortcut) & HOTKEYF_WINDOWS) ? BST_CHECKED : BST_UNCHECKED, 0);
         auto save = control(window, L"BUTTON", L"Save options", WS_TABSTOP | BS_DEFPUSHBUTTON, 202);
         options_layout->place(save, 275, 52, 125, 30);
         auto reset = control(window, L"BUTTON", L"Reset", WS_TABSTOP, 203);
@@ -601,7 +629,10 @@ LRESULT CALLBACK options_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
             catch (const hype::wire::Error&) { SetWindowTextW(GetDlgItem(window, 209), L"Enter a valid profile name."); return 0; }
             SetWindowTextW(GetDlgItem(window, 209), sent ? L"Saving profile name…" : L"This profile disconnected. Open it and try again.");
         }
-        if (LOWORD(w) == 203) SendMessageW(shortcut_box, HKM_SETHOTKEY, MAKEWORD('T', HOTKEYF_CONTROL | HOTKEYF_ALT), 0);
+        if (LOWORD(w) == 203) {
+            SendMessageW(shortcut_box, HKM_SETHOTKEY, static_cast<WPARAM>(default_shortcut & ~static_cast<WORD>(HOTKEYF_WINDOWS << 8)), 0);
+            SendMessageW(GetDlgItem(window, 225), BM_SETCHECK, (HIBYTE(default_shortcut) & HOTKEYF_WINDOWS) ? BST_CHECKED : BST_UNCHECKED, 0);
+        }
         if (LOWORD(w) == 205) {
             guidance.reset(); if (cue) cue->hide();
             browser.history_floor = hype::now_ms(); tabs.clear(); browser.history_dirty = false;
@@ -617,6 +648,7 @@ LRESULT CALLBACK options_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         }
         if (LOWORD(w) == 202) {
             auto value = static_cast<WORD>(SendMessageW(shortcut_box, HKM_GETHOTKEY, 0, 0));
+            if (SendMessageW(GetDlgItem(window, 225), BM_GETCHECK, 0, 0) == BST_CHECKED) value = static_cast<WORD>(value | (HOTKEYF_WINDOWS << 8));
             bool sign_in = SendMessageW(GetDlgItem(window, 210), BM_GETCHECK, 0, 0) == BST_CHECKED;
             if (!isolated_data && sign_in != startup_was_enabled && !startup.set(sign_in)) {
                 MessageBoxW(window, L"Windows could not update sign-in startup. Check access to your user settings and try again.", L"HypeTabs", MB_OK | MB_ICONERROR); return 0;
@@ -644,7 +676,7 @@ LRESULT CALLBACK options_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
                 }
                 refresh(); DestroyWindow(window);
             }
-            else MessageBoxW(window, L"That shortcut is unavailable. Choose a different combination with Ctrl or Alt.", L"HypeTabs", MB_OK | MB_ICONINFORMATION);
+            else MessageBoxW(window, L"That shortcut is unavailable. Choose a different combination with Ctrl, Alt, or the Windows key.", L"HypeTabs", MB_OK | MB_ICONINFORMATION);
         }
         return 0;
     case WM_DESTROY: options_layout.reset(); options_window = nullptr; return 0;
@@ -697,7 +729,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     if (tray.cbSize && message != WM_DESTROY) update_icons();
     switch (message) {
     case WM_CREATE:
-        query_box = control(window, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL | WS_BORDER, 301);
+        query_box = control(window, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, 301);
         SendMessageW(query_box, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Find a tab by title, site, or profile"));
         SendMessageW(query_box, EM_SETLIMITTEXT, 512, 0);
         results_box = control(window, L"LISTBOX", L"Matching tabs", WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 302);
@@ -717,8 +749,31 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         int width = std::max(0L, area.right - 2 * margin);
         MoveWindow(query_box, margin, margin, width, field, TRUE);
         MoveWindow(results_box, margin, margin + field + gap, width, std::max(0L, area.bottom - 2 * margin - 2 * field - 2 * gap), TRUE);
-        MoveWindow(status_label, margin, std::max(0L, area.bottom - margin - field), width, field, TRUE); return 0;
+        MoveWindow(status_label, margin, std::max(0L, area.bottom - margin - field), width, field, TRUE);
+        int radius = MulDiv(widget_radius, dpi, 96);
+        SetWindowRgn(window, CreateRoundRectRgn(0, 0, area.right + 1, area.bottom + 1, radius, radius), TRUE);
+        if (widget_sizing) { widget_width = static_cast<uint32_t>(MulDiv(area.right, 96, dpi)); widget_height = static_cast<uint32_t>(MulDiv(area.bottom, 96, dpi)); }
+        return 0;
     }
+    case WM_GETMINMAXINFO: {
+        int dpi = static_cast<int>(GetDpiForWindow(window)); auto info = reinterpret_cast<MINMAXINFO*>(l);
+        info->ptMinTrackSize = {MulDiv(widget_min_width, dpi, 96), MulDiv(widget_min_height, dpi, 96)}; return 0;
+    }
+    case WM_NCHITTEST: {
+        // No frame: the body drags the widget, the right/bottom edge zone resizes it.
+        POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ScreenToClient(window, &point);
+        RECT area{}; GetClientRect(window, &area);
+        int edge = MulDiv(widget_edge, static_cast<int>(GetDpiForWindow(window)), 96);
+        bool right = point.x >= area.right - edge, bottom = point.y >= area.bottom - edge;
+        return right && bottom ? HTBOTTOMRIGHT : right ? HTRIGHT : bottom ? HTBOTTOM : HTCAPTION;
+    }
+    case WM_ENTERSIZEMOVE: widget_sizing = true; return 0;
+    case WM_EXITSIZEMOVE: widget_sizing = false; save_settings(); return 0;
+    case WM_ACTIVATE:
+        // Any click outside the widget hides it; the click already chose the next foreground window.
+        // A refused foreground request also deactivates, so only a widget that held the foreground hides.
+        if (LOWORD(w) == WA_INACTIVE && widget_foreground && IsWindowVisible(window)) dismiss(false);
+        break;
     case WM_DPICHANGED: {
         update_search_font(HIWORD(w));
         auto rect = reinterpret_cast<RECT*>(l);
@@ -805,7 +860,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case tray_message:
         if (l == NIN_BALLOONUSERCLICK) {
             if (!IsWindowVisible(window)) toggle_search();
-            else { SetForegroundWindow(window); SetFocus(query_box); }
+            else { SetForegroundWindow(window); SetFocus(query_box); widget_foreground = GetForegroundWindow() == window; }
             SetWindowTextW(status_label, L"Select the tab and press Enter to retry. If Chrome stays behind, open its window from the taskbar.");
         }
         if (l == WM_LBUTTONUP) toggle_search();
@@ -828,7 +883,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         transport.reset();
         if (history_store && browser.history_dirty && !paused) history_store->submit(tabs);
         history_store.reset();
-        Shell_NotifyIconW(NIM_DELETE, &tray); UnregisterHotKey(window, 1);
+        Shell_NotifyIconW(NIM_DELETE, &tray); release_shortcut();
         if (options_window) DestroyWindow(options_window);
         if (about_window) DestroyWindow(about_window);
         theme.reset();
@@ -862,17 +917,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             if (ReadFile(file, &settings, sizeof(settings), &read, nullptr)) {
                 WORD value{};
                 if (read == 2) value = static_cast<WORD>(settings.magic & 0xffff);
-                else if (((read == 16 && settings.version == 2) || (read == 24 && (settings.version == 3 || settings.version == 4)) || (read == sizeof(settings) && settings.version == 5)) &&
+                else if (((read == 16 && settings.version == 2) || (read == 24 && (settings.version == 3 || settings.version == 4)) || (read == 32 && settings.version == 5) || (read == sizeof(settings) && settings.version == 6)) &&
                     settings.magic == 0x48545032 && settings.days <= 7 && settings.history_floor >= 0 && settings.history_floor <= 9007199254740991LL) {
                     value = settings.shortcut; browser.retention_days = settings.days; browser.history_floor = settings.history_floor;
                     if (settings.version >= 3 && settings.cue_seconds >= 1 && settings.cue_seconds <= 30 && settings.guided <= 1) {
                         cue_seconds = settings.cue_seconds; guided = settings.guided != 0;
                         if (settings.version >= 4 && settings.reduced_motion <= 1) reduced_motion = settings.reduced_motion != 0;
                         // Only opaque RGB values are accepted; anything else means the system color.
-                        if (settings.version == 5 && (settings.cue_color & 0xff000000) == 0) cue_color = settings.cue_color;
+                        if (settings.version >= 5 && (settings.cue_color & 0xff000000) == 0) cue_color = settings.cue_color;
+                        if (settings.version >= 6 && settings.widget_width >= widget_min_width && settings.widget_height >= widget_min_height &&
+                            settings.widget_width <= 8192 && settings.widget_height <= 8192) { widget_width = settings.widget_width; widget_height = settings.widget_height; }
                     }
                 }
-                if (LOBYTE(value) && (HIBYTE(value) & (HOTKEYF_CONTROL | HOTKEYF_ALT))) shortcut = value;
+                if (valid_shortcut(value)) shortcut = value;
             }
             CloseHandle(file);
         }
@@ -895,7 +952,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     cls.lpfnWndProc = options_proc; cls.lpszClassName = L"HypeTabsOptions"; RegisterClassW(&cls);
     cls.lpfnWndProc = about_proc; cls.lpszClassName = L"HypeTabsAbout"; RegisterClassW(&cls);
     main_window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"HypeTabsSearch", L"HypeTabs — Find a tab",
-        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME, 0, 0, 760, 410, nullptr, nullptr, instance, nullptr);
+        WS_POPUP, 0, 0, widget_default_width, 410, nullptr, nullptr, instance, nullptr);
     if (!main_window) { DeleteObject(ui_font); CloseHandle(singleton); return 1; }
     try { transport = std::make_unique<hype::Transport>(main_window, browser_message); }
     catch (const std::exception&) { MessageBoxW(main_window, L"The local browser connection could not start. Restart HypeTabs to retry.", L"HypeTabs", MB_OK | MB_ICONERROR); }
@@ -915,7 +972,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 MessageBoxW(nullptr, L"The sign-in registration could not be updated. You can retry in Options.", L"HypeTabs", MB_OK | MB_ICONINFORMATION);
         }
     }
-    shortcut_registered = RegisterHotKey(main_window, 1, modifiers(shortcut), LOBYTE(shortcut)) != FALSE;
+    shortcut_registered = bind_shortcut(shortcut);
     if (!shortcut_registered) {
         MessageBoxW(nullptr, L"The search shortcut is already in use. Choose another in Options.", L"HypeTabs", MB_OK | MB_ICONINFORMATION); show_options();
     }
