@@ -727,7 +727,13 @@ void prompt_missing_profiles() {
     DWORD size = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
     if (!size || size >= module.size()) return;
     std::wstring folder(module.data(), size); folder = folder.substr(0, folder.find_last_of(L'\\') + 1) + L"extension";
-    if (GetFileAttributesW((folder + L"\\manifest.json").c_str()) == INVALID_FILE_ATTRIBUTES) return; // no installed extension to load
+    if (GetFileAttributesW((folder + L"\\manifest.json").c_str()) == INVALID_FILE_ATTRIBUTES) {
+        // Nothing can be loaded into Chrome until the extension files sit beside this executable.
+        MessageBoxW(nullptr, (L"The HypeTabs Chrome extension was not found beside this program:\n" + folder +
+            L"\n\nHypeTabs cannot see any Chrome tabs until the extension is loaded in each profile. Keep the extension folder next to HypeTabs.exe (or run tools\\install.ps1), then start HypeTabs again.\n\nYou can turn this check off in Options.").c_str(),
+            L"HypeTabs — Chrome profiles", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+        return;
+    }
     auto profiles = hype::profiles::scan(hype::profiles::default_user_data(), folder, hype::profiles::registered_extension_id());
     std::erase_if(profiles, [](const auto& profile) { return profile.integrated; });
     if (profiles.empty()) return;
