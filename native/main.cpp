@@ -26,6 +26,8 @@
 #include "app_icon.hpp"
 #include "shortcut_hook.hpp"
 #include "profile_setup.hpp"
+#include "deploy.hpp"
+#include "../build/embedded_assets.hpp"
 #include <memory>
 
 namespace {
@@ -101,6 +103,7 @@ bool isolated_data = false;
 bool startup_was_enabled = false;
 bool first_run = false;
 bool profile_check = true; // startup prompt for Chrome profiles that lack the extension
+hype::deploy::Layout deployed; // bridge/extension unpacked from this executable (empty when isolated or failed)
 struct ProfileChoice { std::wstring id, label; uint64_t connection{}; };
 std::vector<ProfileChoice> profile_choices;
 void refresh_profiles(HWND window);
@@ -723,18 +726,9 @@ void show_about() {
 // Startup check: list Chrome profiles whose extension records lack HypeTabs and offer to open
 // chrome://extensions in each so the user can load the installed extension folder there.
 void prompt_missing_profiles() {
-    std::vector<wchar_t> module(32768);
-    DWORD size = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
-    if (!size || size >= module.size()) return;
-    std::wstring folder(module.data(), size); folder = folder.substr(0, folder.find_last_of(L'\\') + 1) + L"extension";
-    if (GetFileAttributesW((folder + L"\\manifest.json").c_str()) == INVALID_FILE_ATTRIBUTES) {
-        // Nothing can be loaded into Chrome until the extension files sit beside this executable.
-        MessageBoxW(nullptr, (L"The HypeTabs Chrome extension was not found beside this program:\n" + folder +
-            L"\n\nHypeTabs cannot see any Chrome tabs until the extension is loaded in each profile. Keep the extension folder next to HypeTabs.exe (or run tools\\install.ps1), then start HypeTabs again.\n\nYou can turn this check off in Options.").c_str(),
-            L"HypeTabs — Chrome profiles", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
-        return;
-    }
-    auto profiles = hype::profiles::scan(hype::profiles::default_user_data(), folder, hype::profiles::registered_extension_id());
+    if (deployed.extension.empty()) return; // nothing unpacked, so nothing can be loaded into Chrome
+    const auto& folder = deployed.extension;
+    auto profiles = hype::profiles::scan(hype::profiles::default_user_data(), folder, deployed.extension_id);
     std::erase_if(profiles, [](const auto& profile) { return profile.integrated; });
     if (profiles.empty()) return;
     auto chrome = hype::profiles::chrome_executable();
@@ -1016,7 +1010,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 MessageBoxW(nullptr, L"The sign-in registration could not be updated. You can retry in Options.", L"HypeTabs", MB_OK | MB_ICONINFORMATION);
         }
     }
-    if (!isolated_data && profile_check) prompt_missing_profiles();
+    if (!isolated_data && !settings_path.empty()) {
+        using namespace hype::embedded;
+        auto root = settings_path.substr(0, settings_path.find_last_of(L'\\'));
+        if (!hype::deploy::install(root, deployed, bridge_exe, bridge_exe_size, extension_manifest, extension_manifest_size, extension_worker, extension_worker_size)) {
+            deployed = {};
+            MessageBoxW(nullptr, (L"HypeTabs could not unpack its Chrome bridge and extension into\n" + root + L"\\App\n\nCheck access to that folder and restart HypeTabs; tabs cannot be found until then.").c_str(), L"HypeTabs", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        }
+        if (profile_check) prompt_missing_profiles();
+    }
     shortcut_registered = bind_shortcut(shortcut);
     if (!shortcut_registered) {
         MessageBoxW(nullptr, L"The search shortcut is already in use. Choose another in Options.", L"HypeTabs", MB_OK | MB_ICONINFORMATION); show_options();

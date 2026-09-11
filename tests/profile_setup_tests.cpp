@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "../native/profile_setup.hpp"
+#include "../native/deploy.hpp"
 #include <iostream>
 #include <cstdlib>
 #include <fstream>
@@ -38,5 +39,9 @@ int main() {
     for (auto dir : {L"Default", L"Profile 1", L"Profile 2", L"System Profile"}) RemoveDirectoryW((root + L"\\" + dir).c_str());
     check(RemoveDirectoryW(root.c_str()) != FALSE, "temporary directory cleanup");
     check(!open_extensions_page(L"C:\\nowhere\\chrome.exe", L"Default") && !open_extensions_page(L"", L"Default"), "missing browser is reported, not launched");
-    std::cout << "Profile setup checks passed against a synthetic Chrome user data directory\n";
+    // ID observed from Chrome for Testing 153 loading this exact folder; the drive letter is the only normalized character.
+    check(hype::deploy::unpacked_extension_id(L"C:\\Users\\albert\\AppData\\Local\\Temp\\HypeTabs-IdCheck\\Ext") == "cooobhcladbligealjdhbfbglceiebik", "unpacked extension ID matches Chrome");
+    check(hype::deploy::unpacked_extension_id(L"c:\\Users\\albert\\AppData\\Local\\Temp\\HypeTabs-IdCheck\\Ext") == "cooobhcladbligealjdhbfbglceiebik", "lower-case drive letter is normalized");
+    check(hype::deploy::unpacked_extension_id(L"C:\\users\\albert\\AppData\\Local\\Temp\\HypeTabs-IdCheck\\Ext") != "cooobhcladbligealjdhbfbglceiebik", "other path case is significant");
+    std::cout << "Profile setup and extension ID checks passed against a synthetic Chrome user data directory\n";
 }

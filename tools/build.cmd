@@ -4,9 +4,13 @@ call "%ProgramFiles(x86)%\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Bui
 if errorlevel 1 exit /b 1
 pushd "%~dp0.."
 if not exist build mkdir build
-cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE /DNOMINMAX native\main.cpp /Febuild\HypeTabs.exe /Fobuild\main.obj /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib comctl32.lib advapi32.lib ole32.lib gdi32.lib crypt32.lib oleaut32.lib uiautomationcore.lib shcore.lib propsys.lib oleacc.lib dwmapi.lib uxtheme.lib comdlg32.lib
-if errorlevel 1 exit /b 1
 cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE native\bridge.cpp /Febuild\HypeTabs.Bridge.exe /Fobuild\bridge.obj /link advapi32.lib user32.lib
+if errorlevel 1 exit /b 1
+node tools\build-extension.mjs
+if errorlevel 1 exit /b 1
+node tools\embed-assets.mjs
+if errorlevel 1 exit /b 1
+cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE /DNOMINMAX native\main.cpp /Febuild\HypeTabs.exe /Fobuild\main.obj /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib comctl32.lib advapi32.lib ole32.lib gdi32.lib crypt32.lib oleaut32.lib uiautomationcore.lib shcore.lib propsys.lib oleacc.lib dwmapi.lib uxtheme.lib comdlg32.lib
 if errorlevel 1 exit /b 1
 cl /nologo /utf-8 /std:c++20 /EHsc /W4 /WX /O2 /MT tests\core_tests.cpp /Febuild\core_tests.exe /Fobuild\core_tests.obj
 if errorlevel 1 exit /b 1
